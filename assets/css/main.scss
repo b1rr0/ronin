@@ -231,12 +231,22 @@ a .header-image {
   .topic-title {
     font-size: 24px;
     font-weight: 900;
-    margin-bottom: 15px;
+    margin-bottom: 8px;
     color: #000;
     font-family: 'Bungee', cursive;
     text-transform: uppercase;
     letter-spacing: 1px;
     text-shadow: 2px 2px 0px #ccc;
+  }
+  
+  .topic-date {
+    font-size: 14px;
+    color: #999;
+    font-weight: 600;
+    margin-bottom: 15px;
+    font-family: 'Comic Neue', cursive;
+    font-style: italic;
+    text-transform: lowercase;
   }
   
   
@@ -586,6 +596,11 @@ hr {
     .topic-content .topic-title {
       font-size: 20px;
       letter-spacing: 0.5px;
+    }
+    
+    .topic-content .topic-date {
+      font-size: 12px;
+      margin-bottom: 12px;
     }
     
     .topic-content .topic-description li {
