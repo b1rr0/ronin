@@ -1,0 +1,12 @@
+title: Tech Topics Site
+description: A simple site exploring various technology topics
+baseurl: ""
+url: ""
+
+# Build settings
+markdown: kramdown
+remote_theme: jekyll/minima
+
+plugins:
+  - jekyll-feed
+  - jekyll-remote-theme
