@@ -168,7 +168,3 @@ Manages and enforces schemas for Kafka topics, ensuring data compatibility.
 Apache Kafka has become an essential component in modern data architectures, providing a robust platform for building real-time data pipelines and streaming applications. Its combination of high performance, scalability, and reliability makes it an ideal choice for organizations dealing with large-scale data processing requirements.
 
 Whether you're building a real-time analytics platform, implementing event-driven microservices, or creating a unified data pipeline, Kafka provides the foundation for handling streaming data at scale.
-
----
-
-[← Back to Home](/)
