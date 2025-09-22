@@ -1,7 +1,7 @@
 title: Ronin's topics
 description: A simple site exploring various technology topics
-baseurl: ""
-url: ""
+baseurl: "/ronin"
+url: "https://b1rr0.github.io"
 
 # Build settings
 markdown: kramdown
