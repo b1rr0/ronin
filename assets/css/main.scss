@@ -114,8 +114,6 @@ body {
   &:hover {
     background: linear-gradient(45deg, #000, #333);
     color: #fff !important;
-    transform: translateY(-2px) scale(1.05);
-    box-shadow: 8px 8px 0px #666;
     text-decoration: none;
   }
 }
@@ -226,7 +224,6 @@ a .header-image {
   &:hover {
     color: #000;
     text-decoration: none;
-    transform: translateY(-2px);
   }
 }
 
@@ -305,8 +302,7 @@ a .header-image {
 }
 
 .topic-card:hover .topic-image img {
-  transform: scale(1.05) rotate(2deg);
-  box-shadow: 8px 8px 0px #666;
+  transform: rotate(2deg);
 }
 
 // Empty topic styling
@@ -487,7 +483,6 @@ a {
 
 a:hover {
   color: #000;
-  background-color: #999;
   padding: 2px 4px;
   border-radius: 5px;
   transform: translateY(-1px);
@@ -535,8 +530,6 @@ a:hover {
   &:hover {
     background: linear-gradient(45deg, #fff, #f0f0f0);
     color: #000 !important;
-    transform: translateY(-3px) scale(1.05);
-    box-shadow: 8px 8px 0px #666;
     border-color: #666;
   }
 }
