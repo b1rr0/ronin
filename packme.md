@@ -44,6 +44,6 @@ This project serves as an excellent learning resource for:
 
 Want to explore the implementation details or contribute to the project?
 
-**[View on GitHub →](https://github.com/b1rr0/PackMe)**
+**[View on GitHub →](https://github.com/b1rr0/PackMe){:target="_blank"}**
 
 The complete source code, documentation, and examples are available in the repository.
