@@ -1,8 +1,44 @@
 ---
 layout: page
 title: Message Queue System
-permalink: /message-queue/
+permalink: /message-queue-/
 ---
+
+<style>
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em auto;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+code {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  img {
+    max-width: 95%;
+  }
+  
+  pre {
+    font-size: 14px;
+  }
+}
+</style>
 
 # Message Queue System: Building a Kafka-like System from Scratch
 
@@ -18,51 +54,52 @@ Message queues solve fundamental problems in distributed systems by enabling asy
 
 ![2_syn_microservices.png](assets/message_queue/2_syn_microservices.png)
 
-## • Services can operate independently in time
-## • Senders don't wait for receivers to become available
-## • Decouples service lifecycles and deployment schedules
+- **Services can operate independently in time**
+- **Senders don't wait for receivers to become available**
+- **Decouples service lifecycles and deployment schedules**
 
-### Improved Fault Tolerance
-## • When a receiver temporarily crashes, messages are stored in the queue and processed later
-## • Reduces risk of data loss during service outages
-## • Provides graceful degradation under failure conditions
+#### Improved Fault Tolerance
+- **When a receiver temporarily crashes, messages are stored in the queue and processed later**
+- **Reduces risk of data loss during service outages**
+- **Provides graceful degradation under failure conditions**
 
-### Scalability
-## • Easy to add more consumers (workers) to process messages faster
-## • Queue distributes load between multiple consumers
-## • Horizontal scaling without architectural changes
+#### Scalability
+- **Easy to add more consumers (workers) to process messages faster**
+- **Queue distributes load between multiple consumers**
+- **Horizontal scaling without architectural changes**
 
-### Load Buffering
-## • When incoming request flow is very large, the queue temporarily "smooths" the load
-## • Protects the system from overload situations
-## • Acts as a shock absorber for traffic spikes
+#### Load Buffering
+- **When incoming request flow is very large, the queue temporarily "smooths" the load**
+- **Protects the system from overload situations**
+- **Acts as a shock absorber for traffic spikes**
 
-### Reliable Data Transmission and Logging
-## • Messages are not lost (or rarely lost, depending on configuration)
-## • Can implement guaranteed delivery ("at least once", "exactly once")
-## • Provides audit trail and replay capabilities
+#### Reliable Data Transmission and Logging
+- **Messages are not lost (or rarely lost, depending on configuration)**
+- **Can implement guaranteed delivery ("at least once", "exactly once")**
+- **Provides audit trail and replay capabilities**
 
 ![1_sync_micrpservice_with_5_another_services.png](assets/message_queue/1_sync_micrpservice_with_5_another_services.png)
 
-## **Instead of complex synchronous interactions between multiple services, we can simplify with a queue:**
-![1_write_to_queue_4_read.png](assets/message_queue/1_write_to_queue_4_read.png)
+**Instead of complex synchronous interactions between multiple services, we can simplify with a queue:**
 
-### Why Not Just Use Simple Programming Language Queues?
+<img src="assets/message_queue/1_write_to_queue_4_read.png" alt="Write to Queue and Read" style="max-width: 100%; height: auto;" />
 
-## You might think: "Why not just use a simple queue from a programming language where first-in-first-out (FIFO) works?" Indeed, we could use basic data structures like queues from standard libraries:
+#### Why Not Just Use Simple Programming Language Queues?
 
-## However, this approach has a critical problem: **when we dequeue a message, we no longer store it anywhere**. If we retrieve a message and our consumer becomes unavailable (crashes, network issues, etc.), we lose that data permanently. The message is gone from the queue but never processed.
+You might think: "Why not just use a simple queue from a programming language where first-in-first-out (FIFO) works?" Indeed, we could use basic data structures like queues from standard libraries:
 
-### Why Message Brokers Are More Sophisticated
+However, this approach has a critical problem: **when we dequeue a message, we no longer store it anywhere**. If we retrieve a message and our consumer becomes unavailable (crashes, network issues, etc.), we lose that data permanently. The message is gone from the queue but never processed.
 
-## This is exactly why message brokers are more sophisticated. They solve this fundamental reliability problem by:
+#### Why Message Brokers Are More Sophisticated
 
-## • **Persistent storage**: Messages are stored on disk, not just in memory
-## • **Acknowledgment mechanisms**: Messages remain in the broker until explicitly acknowledged
-## • **Offset tracking**: Consumers can track their position and resume from where they left off
-## • **Replication**: Multiple copies ensure data isn't lost when servers fail
+This is exactly why message brokers are more sophisticated. They solve this fundamental reliability problem by:
 
-![queue_as_data_strucure.png](assets/message_queue/queue_as_data_strucure.png)
+- **Persistent storage**: Messages are stored on disk, not just in memory
+- **Acknowledgment mechanisms**: Messages remain in the broker until explicitly acknowledged
+- **Offset tracking**: Consumers can track their position and resume from where they left off
+- **Replication**: Multiple copies ensure data isn't lost when servers fail
+
+<img src="assets/message_queue/queue_as_data_strucure.png" alt="Queue as Data Structure" style="max-width: 100%; height: auto;" />
 ```go
 type SimpleQueue struct {
     items []Message
@@ -70,15 +107,15 @@ type SimpleQueue struct {
 }
 
 func (q *SimpleQueue) Enqueue(msg Message) {
-    q.mutex.Lock()
-    defer q.mutex.Unlock()
-    q.items = append(q.items, msg)
+q.mutex.Lock()
+defer q.mutex.Unlock()
+q.items = append(q.items, msg)
 }
 
 func (q *SimpleQueue) Dequeue() (Message, bool) {
-    q.mutex.Lock()
-    defer q.mutex.Unlock()
-    
+q.mutex.Lock()
+defer q.mutex.Unlock()
+
     if len(q.items) == 0 {
         return Message{}, false
     }
@@ -91,43 +128,43 @@ func (q *SimpleQueue) Dequeue() (Message, bool) {
 
 
 
-## Short Description of Queue as a Black Box
+#### Short Description of Queue as a Black Box
 
-## A message queue acts as a temporary storage and routing mechanism between producers (senders) and consumers (receivers). At its core, it's a data structure that follows FIFO (First In, First Out) principles, but modern message brokers extend this with sophisticated features like partitioning, replication, and routing.
+A message queue acts as a temporary storage and routing mechanism between producers (senders) and consumers (receivers). At its core, it's a data structure that follows FIFO (First In, First Out) principles, but modern message brokers extend this with sophisticated features like partitioning, replication, and routing.
 
-## Different Message Brokers Comparison
+#### Different Message Brokers Comparison
 
-## Various message brokers exist, each with different trade-offs:
+Various message brokers exist, each with different trade-offs:
 
-### Kafka vs. RabbitMQ
-## • **Kafka**: High-throughput, log-based, designed for stream processing
-## • **RabbitMQ**: Traditional messaging patterns, complex routing, lower latency
-## • **AWS SQS/SNS**: Managed services, simple integration, limited throughput
-## • **NATS**: Ultra-low latency, lightweight, good for microservices
+**Kafka vs. RabbitMQ**
+- **Kafka**: High-throughput, log-based, designed for stream processing
+- **RabbitMQ**: Traditional messaging patterns, complex routing, lower latency
+- **AWS SQS/SNS**: Managed services, simple integration, limited throughput
+- **NATS**: Ultra-low latency, lightweight, good for microservices
 
-## CAP Theorem and Message Brokers
+### CAP Theorem and Message Brokers
 
-![CAP_theorem_ .png](assets/message_queue/CAP_theorem_%20.png)
+<img src="assets/message_queue/CAP_theorem_%20.png" alt="CAP Theorem" style="max-width: 100%; height: auto;" />
 
-### How CAP Theorem Relates to Message Brokers
+#### How CAP Theorem Relates to Message Brokers
 
-## Message brokers (Kafka, RabbitMQ, NATS, Pulsar, etc.) are distributed systems and must comply with the CAP theorem. Different brokers make different trade-offs between Consistency, Availability, and Partition tolerance.
+Message brokers (Kafka, RabbitMQ, NATS, Pulsar, etc.) are distributed systems and must comply with the CAP theorem. Different brokers make different trade-offs between Consistency, Availability, and Partition tolerance.
 
-### Examples:
+**Examples:**
 
-### Apache Kafka
-## • Chooses AP (Availability + Partition tolerance)
-## • During network failures, continues to operate
-## • May temporarily lose consistency (different nodes may see different states)
-## • Later data "catches up" and synchronizes
+**Apache Kafka**
+- Chooses AP (Availability + Partition tolerance)
+- During network failures, continues to operate
+- May temporarily lose consistency (different nodes may see different states)
+- Later data "catches up" and synchronizes
 
-### RabbitMQ (in cluster mode)
-## • Closer to CA (Consistency + Availability) while network is stable
-## • During partition, may "freeze" or lose some messages to maintain consistency
+**RabbitMQ (in cluster mode)**
+- Closer to CA (Consistency + Availability) while network is stable
+- During partition, may "freeze" or lose some messages to maintain consistency
 
-### NATS JetStream
-## • Usually balances between AP and CP, depending on configuration
-## • Can choose priority (availability or strict consistency) based on use case
+**NATS JetStream**
+- Usually balances between AP and CP, depending on configuration
+- Can choose priority (availability or strict consistency) based on use case
 
 /// Introduction completed, now the main part with code examples:
 
