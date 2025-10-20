@@ -355,12 +355,9 @@ The coordinator acts as the brain of the Kafka cluster, managing metadata, broke
 
 For more details about Kafka-Zookeeper architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
 
-**Real Kafka vs Our Implementation:**
-- **Real Kafka**: Zookeeper manages cluster metadata, leader election, and broker coordination
-- **Our System**: Custom coordinator service handles the same responsibilities
-- **Same principles**, simplified implementation for learning
+**Our Custom Coordinator Implementation:**
 
-In our implementation, we'll build our own lightweight coordinator that:
+Here's the code that emulates the work of our own coordinator, handling all cluster management responsibilities:
 
 ```go
 type Coordinator struct {
@@ -624,14 +621,19 @@ The coordinator tracks broker load and helps producers make intelligent decision
 
 **Partition Selection Strategies:**
 
-Kafka producers use various algorithms to distribute messages across partitions:
+Producers use different algorithms to distribute messages across partitions. Each strategy serves specific use cases:
 
+### 1. Round-Robin Partitioning
+
+**Algorithm:** Distributes messages evenly across all partitions using a rotating counter.
+
+**Description:**
+- Simple sequential distribution across partitions
+- Excellent for load balancing when message ordering isn't critical
+- No hot partitions - traffic spreads uniformly
+
+**Code:**
 ```go
-type Partitioner interface {
-    Partition(message *Message, metadata *TopicMetadata) int32
-}
-
-// Round-robin partitioner
 type RoundRobinPartitioner struct {
     counter int32
 }
@@ -641,21 +643,42 @@ func (r *RoundRobinPartitioner) Partition(message *Message, metadata *TopicMetad
     partition := atomic.AddInt32(&r.counter, 1) % partitionCount
     return partition
 }
+```
 
-// Key-based partitioner (consistent hashing)
+### 2. Key-Based Partitioning (Consistent Hashing)
+
+**Algorithm:** Uses message key hash to determine partition, ensuring same keys always go to same partition.
+
+**Description:**
+- Guarantees ordering within each key
+- Enables related messages to stay together
+- Risk of hot partitions if key distribution is uneven
+
+**Code:**
+```go
 type KeyPartitioner struct{}
 
 func (k *KeyPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
     if message.Key == nil {
-        // No key, use round-robin
         return rand.Int31n(metadata.PartitionCount)
     }
     
     hash := murmur3.Sum32(message.Key)
     return int32(hash % uint32(metadata.PartitionCount))
 }
+```
 
-// Sticky partitioner (Apache Kafka 2.4+)
+### 3. Sticky Partitioning
+
+**Algorithm:** Batches keyless messages to same partition until batch is full, then switches.
+
+**Description:**
+- Improves batching efficiency for better throughput
+- Reduces network round-trips
+- Better resource utilization while maintaining load balance
+
+**Code:**
+```go
 type StickyPartitioner struct {
     stickyPartition int32
     batchIsFull     bool
@@ -667,12 +690,10 @@ func (s *StickyPartitioner) Partition(message *Message, metadata *TopicMetadata)
     defer s.mutex.Unlock()
     
     if message.Key != nil {
-        // Messages with keys always go to same partition
         hash := murmur3.Sum32(message.Key)
         return int32(hash % uint32(metadata.PartitionCount))
     }
     
-    // For messages without keys, stick to one partition until batch is full
     if s.stickyPartition == -1 || s.batchIsFull {
         s.stickyPartition = rand.Int31n(metadata.PartitionCount)
         s.batchIsFull = false
@@ -682,62 +703,17 @@ func (s *StickyPartitioner) Partition(message *Message, metadata *TopicMetadata)
 }
 ```
 
-**How Producer Chooses Partitions:**
+### 4. Load-Aware Selection
 
-The partition selection algorithm is crucial for performance and ordering:
+**Algorithm:** Chooses partition based on real-time broker load metrics.
 
-**Key-based Partitioning:**
-- Messages with the same key always go to the same partition
-- Guarantees ordering within a key
-- Can cause hotspots if key distribution is uneven
+**Description:**
+- Monitors CPU, memory, disk usage, and message rates
+- Calculates weighted scores for optimal distribution
+- Prevents overloading busy brokers
 
-**Round-robin Distribution:**
-- Distributes load evenly across all partitions
-- Good for throughput when ordering isn't required
-- Simple but can fragment batches
-
-**Sticky Partitioning:**
-- Batches messages to the same partition until batch is full
-- Reduces latency by improving batch efficiency
-- Better network utilization
-
+**Code:**
 ```go
-func (p *Producer) selectPartition(message *Message, topicMetadata *TopicMetadata) int32 {
-    // Strategy 1: If partition is explicitly set, use it
-    if message.Partition >= 0 {
-        return message.Partition
-    }
-    
-    // Strategy 2: If message has key, use key-based partitioning
-    if message.Key != nil {
-        return p.keyBasedPartition(message.Key, topicMetadata.PartitionCount)
-    }
-    
-    // Strategy 3: Use sticky partitioning for better batching
-    return p.stickyPartitioner.Partition(message, topicMetadata)
-}
-
-func (p *Producer) keyBasedPartition(key []byte, partitionCount int32) int32 {
-    hash := murmur3.Sum32(key)
-    return int32(hash % uint32(partitionCount))
-}
-```
-
-**Load-Aware Partition Selection:**
-
-```go
-// Producer chooses partition based on load balancing
-func (p *Producer) selectOptimalPartition(message *Message, topicMeta *TopicMetadata) int32 {
-    // Strategy 1: If message has key, use key-based partitioning (no choice)
-    if message.Key != nil {
-        hash := murmur3.Sum32(message.Key)
-        return int32(hash % uint32(len(topicMeta.Partitions)))
-    }
-    
-    // Strategy 2: For keyless messages, use load-aware selection
-    return p.loadAwarePartitionSelection(topicMeta)
-}
-
 func (p *Producer) loadAwarePartitionSelection(topicMeta *TopicMetadata) int32 {
     type PartitionScore struct {
         ID    int32
@@ -747,7 +723,6 @@ func (p *Producer) loadAwarePartitionSelection(topicMeta *TopicMetadata) int32 {
     var scores []PartitionScore
     
     for partitionID, partition := range topicMeta.Partitions {
-        // Calculate load score for this partition's leader
         load := partition.LeaderLoad
         score := (load.CPUUsage * 0.4) + 
                  (load.MemoryUsage * 0.3) + 
@@ -760,12 +735,10 @@ func (p *Producer) loadAwarePartitionSelection(topicMeta *TopicMetadata) int32 {
         })
     }
     
-    // Sort by score (ascending - lower is better)
     sort.Slice(scores, func(i, j int) bool {
         return scores[i].Score < scores[j].Score
     })
     
-    // Return partition with lowest load
     return scores[0].ID
 }
 ```
