@@ -175,615 +175,11 @@ For a long time, engineers developed programs that operate on real-world objects
 
 Companies strive to reduce tight coupling between services and improve application resilience to failures by isolating data providers and their consumers. This request, together with the popularity of microservice architecture, popularizes the event-oriented approach.
 
-Events in systems can be stored in traditional relational databases just like objects. But doing so is cumbersome and inefficient. Instead, we use a structure called a log, which we'll discuss below.
+Events in systems can be stored in traditional relational databases just like objects. But doing so is cumbersome and inefficient. Instead, we use a structure called a log, which we'll discuss later.
 
-### The Log: Foundation of Event Streaming
+## System Architecture
 
-**TLDR**: A log is an ordered stream of events over time. An event occurs, gets to the end of the log, and remains there unchanged.
-
-Apache Kafka manages logs and organizes a platform that connects data providers with consumers and provides the ability to receive an ordered stream of events in real time.
-
-#### How Kafka Logs Are Structured
-
-At its core, Kafka is built around the concept of logs - not application logs for debugging, but commit logs similar to those used in databases. Each log is an ordered, immutable sequence of records that is continually appended to.
-
-**Physical File Structure:**
-
-Kafka organizes data on disk in a hierarchical structure:
-
-```
-/kafka-logs/
-├── topic-name-0/          # Partition 0 of "topic-name"
-│   ├── 00000000000000000000.log    # Segment file (data)
-│   ├── 00000000000000000000.index  # Offset index
-│   ├── 00000000000000000000.timeindex # Time index
-│   ├── 00000000000000012345.log    # Next segment file
-│   ├── 00000000000000012345.index  # Next offset index
-│   └── leader-epoch-checkpoint     # Leader epoch data
-├── topic-name-1/          # Partition 1 of "topic-name"
-│   ├── 00000000000000000000.log
-│   ├── 00000000000000000000.index
-│   └── ...
-├── another-topic-0/       # Different topic, partition 0
-│   ├── 00000000000000000000.log
-│   └── ...
-└── __consumer_offsets-0/  # Internal Kafka topic for offset storage
-    ├── 00000000000000000000.log
-    └── ...
-```
-
-**Segment Files Explained:**
-
-Each partition is divided into segments. A segment is simply a file on disk containing a portion of the log. When a segment reaches a certain size (default 1GB) or age (default 7 days), it's closed and a new segment is created.
-
-- **Log files (.log)**: Contain the actual message data
-- **Index files (.index)**: Map offsets to physical positions in log files for fast lookups
-- **Time index files (.timeindex)**: Map timestamps to offsets for time-based queries
-
-**Log Segment Naming Convention:**
-
-The segment files are named with the base offset of the first message in that segment:
-- `00000000000000000000.log` - Contains messages from offset 0
-- `00000000000000012345.log` - Contains messages starting from offset 12,345
-
-**Message Storage Within Segments:**
-
-Each message in a log segment contains:
-
-```
-Message Format:
-┌─────────────┬──────────┬─────────┬──────────┬─────────┬─────────┐
-│   Offset    │   Size   │   CRC   │   Magic  │   Key   │  Value  │
-│   8 bytes   │ 4 bytes  │ 4 bytes │  1 byte  │ N bytes │ M bytes │
-└─────────────┴──────────┴─────────┴──────────┴─────────┴─────────┘
-```
-
-**Log Compaction and Retention:**
-
-Kafka can manage log data in two ways:
-
-1. **Time-based retention**: Delete segments older than a configured time (e.g., 7 days)
-2. **Size-based retention**: Delete oldest segments when total size exceeds limit
-3. **Log compaction**: Keep only the latest value for each key (for topics with keys)
-
-**How Reads and Writes Work:**
-
-**Writing (Appending):**
-- New messages are always appended to the active segment (latest .log file)
-- Write operations are sequential, making them very fast
-- Each message gets assigned the next available offset
-
-**Reading:**
-- Consumers specify an offset to start reading from
-- Kafka uses the index files to quickly locate the physical position
-- Reads can happen from any point in the log, multiple times
-
-**Log Segments in Action:**
-
-```go
-type LogSegment struct {
-    BaseOffset    int64           // First offset in this segment
-    NextOffset    int64           // Next offset to be assigned
-    LogFile       *os.File        // The .log file
-    IndexFile     *os.File        // The .index file
-    TimeIndexFile *os.File        // The .timeindex file
-    MaxSize       int64           // When to roll to new segment
-    CreatedTime   time.Time       // When this segment was created
-}
-
-// When writing a new message
-func (s *LogSegment) Append(message []byte) (offset int64, err error) {
-    offset = s.NextOffset
-    
-    // Write to log file
-    position, err := s.LogFile.Write(message)
-    if err != nil {
-        return 0, err
-    }
-    
-    // Update index (offset -> file position mapping)
-    s.IndexFile.Write(encodeIndex(offset, position))
-    
-    s.NextOffset++
-    return offset, nil
-}
-```
-
-**Benefits of This Log Structure:**
-
-1. **Sequential I/O**: All writes are appends, which are much faster than random writes
-2. **Immutability**: Once written, messages never change, simplifying concurrent access
-3. **Efficient Storage**: Index files allow fast random access without loading entire log
-4. **Scalability**: Each partition can be on different disks/servers
-5. **Fault Tolerance**: Segments can be replicated across multiple brokers
-
-**Example: Reading Messages by Offset**
-
-When a consumer requests messages starting from offset 15,000:
-
-1. Kafka looks at segment files: `00000000000000012345.log` contains this offset
-2. Uses `00000000000000012345.index` to find physical position in the log file
-3. Reads sequentially from that position
-4. Returns batch of messages to consumer
-
-This log-centric design is what makes Kafka incredibly fast and scalable, capable of handling millions of messages per second while providing strong durability guarantees.
-
-#### Internal File Structure Details
-
-Now let's dive deeper into how each file type stores data internally:
-
-**1. Log Files (.log) - Message Data Storage:**
-
-The .log files contain the actual message data in a binary format. Each message is stored with the following structure:
-
-```
-Message Record Format:
-┌─────────────┬──────────────┬─────────────┬──────────────┬─────────────┬─────────────┐
-│   Offset    │  Message     │   CRC32     │  Magic Byte  │  Attributes │  Timestamp  │
-│   8 bytes   │  Size        │   4 bytes   │   1 byte     │   1 byte    │   8 bytes   │
-│   (int64)   │  4 bytes     │             │              │             │             │
-└─────────────┼──────────────┼─────────────┼──────────────┼─────────────┼─────────────┤
-│  Key Length │  Key Data    │ Value Length│  Value Data  │   Headers   │             │
-│   4 bytes   │  N bytes     │   4 bytes   │   M bytes    │  Variable   │             │
-│   (int32)   │              │   (int32)   │              │             │             │
-└─────────────┴──────────────┴─────────────┴──────────────┴─────────────┴─────────────┘
-```
-
-Example message in hexadecimal:
-```
-00 00 00 00 00 00 30 39  // Offset: 12345
-00 00 00 4A              // Message size: 74 bytes
-B4 8F 2A 1C              // CRC32 checksum
-02                       // Magic byte (version 2)
-00                       // Attributes (no compression)
-00 00 01 7F 8E 9A BC DE  // Timestamp
-00 00 00 08              // Key length: 8 bytes
-75 73 65 72 2D 31 32 33  // Key: "user-123"
-00 00 00 2A              // Value length: 42 bytes
-7B 22 61 63 74 69 6F 6E  // Value: {"action":"login",...}
-...
-```
-
-**2. Index Files (.index) - Offset to Position Mapping:**
-
-Index files provide fast lookup from logical offsets to physical byte positions in the log file. They use a compact binary format:
-
-```
-Index Entry Format (8 bytes each):
-┌──────────────┬─────────────────┐
-│ Relative     │ Physical        │
-│ Offset       │ Position        │
-│ 4 bytes      │ 4 bytes         │
-│ (int32)      │ (int32)         │
-└──────────────┴─────────────────┘
-```
-
-Index entries are sorted by offset and stored every N messages (default: every 4KB of log data). Example:
-
-```go
-type IndexEntry struct {
-    RelativeOffset uint32  // Offset relative to segment base offset
-    Position       uint32  // Byte position in .log file
-}
-
-// Example index entries for segment starting at offset 12345:
-// Entry 1: RelativeOffset=0,    Position=0      (offset 12345 at byte 0)
-// Entry 2: RelativeOffset=100,  Position=8192   (offset 12445 at byte 8192)
-// Entry 3: RelativeOffset=200,  Position=16384  (offset 12545 at byte 16384)
-```
-
-**3. Time Index Files (.timeindex) - Timestamp to Offset Mapping:**
-
-Time index files enable time-based queries by mapping timestamps to offsets:
-
-```
-Time Index Entry Format (12 bytes each):
-┌──────────────┬──────────────┬─────────────────┐
-│ Timestamp    │ Relative     │ (Padding)       │
-│ 8 bytes      │ Offset       │ 0 bytes         │
-│ (int64)      │ 4 bytes      │                 │
-│              │ (int32)      │                 │
-└──────────────┴──────────────┴─────────────────┘
-```
-
-Example time index entries:
-
-```go
-type TimeIndexEntry struct {
-    Timestamp      int64   // Unix timestamp in milliseconds
-    RelativeOffset uint32  // Offset relative to segment base offset
-}
-
-// Example entries:
-// Entry 1: Timestamp=1640995200000, RelativeOffset=0    (Jan 1, 2022 -> offset 12345)
-// Entry 2: Timestamp=1640995260000, RelativeOffset=50   (1 min later -> offset 12395)
-// Entry 3: Timestamp=1640995320000, RelativeOffset=100  (2 min later -> offset 12445)
-```
-
-**4. Leader Epoch Checkpoint Files:**
-
-These files track leadership changes and help with log recovery:
-
-```
-Leader Epoch Entry Format:
-┌──────────────┬─────────────────┐
-│ Epoch        │ Start Offset    │
-│ 4 bytes      │ 8 bytes         │
-│ (int32)      │ (int64)         │
-└──────────────┴─────────────────┘
-```
-
-Example leader-epoch-checkpoint content:
-
-```
-# Leader epoch checkpoint file
-# Format: epoch offset
-0 0
-1 1000
-2 5000
-3 12000
-```
-
-This means:
-- Epoch 0: Started at offset 0
-- Epoch 1: Started at offset 1000 (new leader elected)
-- Epoch 2: Started at offset 5000 (another leadership change)
-- Epoch 3: Started at offset 12000 (current leader)
-
-**5. File Access Patterns in Go Implementation:**
-
-```go
-type PartitionLog struct {
-    segments    []*LogSegment
-    activeSegment *LogSegment
-    baseDir     string
-}
-
-func (p *PartitionLog) readByOffset(offset int64) (*Message, error) {
-    // 1. Find the segment containing this offset
-    segment := p.findSegment(offset)
-    if segment == nil {
-        return nil, fmt.Errorf("offset %d not found", offset)
-    }
-    
-    // 2. Use index to find physical position
-    relativeOffset := offset - segment.BaseOffset
-    position, err := segment.lookupPosition(relativeOffset)
-    if err != nil {
-        return nil, err
-    }
-    
-    // 3. Read from log file at that position
-    return segment.readAt(position)
-}
-
-func (s *LogSegment) lookupPosition(relativeOffset int64) (int64, error) {
-    // Binary search in index file
-    indexEntries := s.loadIndexEntries()
-    
-    // Find the largest index entry <= relativeOffset
-    left, right := 0, len(indexEntries)-1
-    for left <= right {
-        mid := (left + right) / 2
-        if indexEntries[mid].RelativeOffset <= relativeOffset {
-            left = mid + 1
-        } else {
-            right = mid - 1
-        }
-    }
-    
-    if right < 0 {
-        return 0, nil  // Read from beginning of segment
-    }
-    
-    return int64(indexEntries[right].Position), nil
-}
-```
-
-**6. How Read Requests Work in Practice:**
-
-Let's trace through exactly how a consumer read request is processed at the file system level:
-
-**Step-by-step Read Request Flow:**
-
-```go
-// Consumer requests: "Give me messages starting from offset 15,000 with max 100KB"
-type FetchRequest struct {
-    Topic         string
-    Partition     int32
-    StartOffset   int64   // 15000
-    MaxBytes      int32   // 100KB
-    MaxMessages   int32   // Optional limit
-}
-
-func (broker *Broker) handleFetchRequest(req FetchRequest) (*FetchResponse, error) {
-    // Step 1: Locate the partition log directory
-    logDir := fmt.Sprintf("%s/%s-%d", broker.dataDir, req.Topic, req.Partition)
-    
-    // Step 2: Find which segment contains offset 15,000
-    segment, err := findSegmentForOffset(logDir, req.StartOffset)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Step 3: Use index to find physical position in log file
-    position, err := segment.findPositionForOffset(req.StartOffset)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Step 4: Read messages from log file starting at that position
-    messages, err := segment.readMessagesFromPosition(position, req.MaxBytes)
-    if err != nil {
-        return nil, err
-    }
-    
-    return &FetchResponse{Messages: messages}, nil
-}
-```
-
-**Detailed Implementation:**
-
-```go
-func findSegmentForOffset(logDir string, targetOffset int64) (*LogSegment, error) {
-    // List all .log files in directory
-    files, _ := filepath.Glob(filepath.Join(logDir, "*.log"))
-    
-    // Segment files are named by their base offset: 00000000000000012345.log
-    for _, file := range files {
-        baseOffset := parseOffsetFromFilename(file)  // Extract 12345 from filename
-        
-        // Check if our target offset falls in this segment
-        if baseOffset <= targetOffset {
-            // Read the segment to check if it contains our offset
-            segment := &LogSegment{
-                BaseOffset: baseOffset,
-                LogFile:    file,
-                IndexFile:  strings.Replace(file, ".log", ".index", 1),
-            }
-            
-            // Check if this segment contains the target offset
-            if segment.containsOffset(targetOffset) {
-                return segment, nil
-            }
-        }
-    }
-    return nil, fmt.Errorf("offset %d not found", targetOffset)
-}
-
-func (s *LogSegment) findPositionForOffset(targetOffset int64) (int64, error) {
-    relativeOffset := targetOffset - s.BaseOffset
-    
-    // Step 1: Load index entries from .index file
-    indexFile, err := os.Open(s.IndexFile)
-    if err != nil {
-        return 0, err
-    }
-    defer indexFile.Close()
-    
-    // Step 2: Binary search through index entries
-    // Each index entry is 8 bytes: [4-byte relative offset][4-byte position]
-    var entries []IndexEntry
-    buffer := make([]byte, 8)
-    
-    for {
-        n, err := indexFile.Read(buffer)
-        if err == io.EOF {
-            break
-        }
-        if n != 8 {
-            return 0, fmt.Errorf("corrupt index file")
-        }
-        
-        entry := IndexEntry{
-            RelativeOffset: binary.BigEndian.Uint32(buffer[0:4]),
-            Position:       binary.BigEndian.Uint32(buffer[4:8]),
-        }
-        entries = append(entries, entry)
-    }
-    
-    // Step 3: Find the closest index entry <= our target
-    closestEntry := binarySearchIndex(entries, uint32(relativeOffset))
-    
-    return int64(closestEntry.Position), nil
-}
-
-func (s *LogSegment) readMessagesFromPosition(startPosition int64, maxBytes int32) ([]Message, error) {
-    logFile, err := os.Open(s.LogFile)
-    if err != nil {
-        return nil, err
-    }
-    defer logFile.Close()
-    
-    // Seek to the calculated position
-    _, err = logFile.Seek(startPosition, 0)
-    if err != nil {
-        return nil, err
-    }
-    
-    var messages []Message
-    bytesRead := int32(0)
-    
-    for bytesRead < maxBytes {
-        // Read message header to get message size
-        header := make([]byte, 12) // Offset(8) + Size(4)
-        n, err := logFile.Read(header)
-        if err == io.EOF {
-            break
-        }
-        if n != 12 {
-            return nil, fmt.Errorf("corrupt log file")
-        }
-        
-        messageOffset := binary.BigEndian.Uint64(header[0:8])
-        messageSize := binary.BigEndian.Uint32(header[8:12])
-        
-        // Read the complete message
-        messageData := make([]byte, messageSize)
-        n, err = logFile.Read(messageData)
-        if err != nil || uint32(n) != messageSize {
-            return nil, fmt.Errorf("failed to read complete message")
-        }
-        
-        // Parse message data (CRC, magic byte, key, value, etc.)
-        message, err := parseMessage(messageOffset, messageData)
-        if err != nil {
-            return nil, err
-        }
-        
-        messages = append(messages, *message)
-        bytesRead += int32(12 + messageSize) // Header + message data
-    }
-    
-    return messages, nil
-}
-```
-
-**Index-based Lookup Optimization:**
-
-The index file acts as a "table of contents" for the log file:
-
-```
-Example: Finding offset 15,247 in segment starting at 12,345
-
-Index File Contents:
-RelativeOffset | Position | Actual Offset | Log Position
-0             | 0        | 12,345       | Byte 0
-100           | 8192     | 12,445       | Byte 8192  
-200           | 16384    | 12,545       | Byte 16384
-300           | 24576    | 12,645       | Byte 24576
-400           | 32768    | 12,745       | Byte 32768
-
-Target: offset 15,247 = relative offset 2,902
-
-Binary search finds: closest entry is RelativeOffset=200 (actual offset 12,545)
-Start reading from Position=16384 and scan forward until we find offset 15,247
-```
-
-**Time-based Queries Using TimeIndex:**
-
-```go
-func (s *LogSegment) findOffsetByTimestamp(timestamp int64) (int64, error) {
-    timeIndexFile, err := os.Open(s.TimeIndexFile)
-    if err != nil {
-        return 0, err
-    }
-    defer timeIndexFile.Close()
-    
-    // Each time index entry is 12 bytes: [8-byte timestamp][4-byte relative offset]
-    buffer := make([]byte, 12)
-    var closestOffset uint32 = 0
-    
-    for {
-        n, err := timeIndexFile.Read(buffer)
-        if err == io.EOF {
-            break
-        }
-        if n != 12 {
-            return 0, fmt.Errorf("corrupt time index")
-        }
-        
-        entryTimestamp := int64(binary.BigEndian.Uint64(buffer[0:8]))
-        relativeOffset := binary.BigEndian.Uint32(buffer[8:12])
-        
-        if entryTimestamp <= timestamp {
-            closestOffset = relativeOffset
-        } else {
-            break // Timestamps are sorted, so we found our answer
-        }
-    }
-    
-    return s.BaseOffset + int64(closestOffset), nil
-}
-```
-
-**Network Protocol Example:**
-
-Here's how the actual network request/response looks:
-
-```go
-// Wire format for fetch request (simplified)
-type FetchRequestWire struct {
-    APIKey        int16   // 1 for Fetch
-    APIVersion    int16   // Protocol version
-    CorrelationID int32   // Request ID
-    ClientID      string  // Consumer identifier
-    MaxWaitTime   int32   // How long to wait for data
-    MinBytes      int32   // Minimum bytes to return
-    Topics        []struct {
-        Name       string
-        Partitions []struct {
-            PartitionID int32
-            FetchOffset int64
-            MaxBytes    int32
-        }
-    }
-}
-
-// Wire format for fetch response
-type FetchResponseWire struct {
-    CorrelationID int32
-    Topics        []struct {
-        Name       string
-        Partitions []struct {
-            PartitionID    int32
-            ErrorCode      int16
-            HighWatermark  int64  // Latest offset in partition
-            MessageSet     []byte // Actual message data
-        }
-    }
-}
-```
-
-**Consumer Example Using Go Client:**
-
-```go
-// High-level consumer code that triggers all this low-level activity
-consumer := kafka.NewConsumer(kafka.ConfigMap{
-    "bootstrap.servers": "localhost:9092",
-    "group.id":         "my-consumer-group",
-    "auto.offset.reset": "earliest",
-})
-
-consumer.Subscribe("user-events", nil)
-
-for {
-    message, err := consumer.ReadMessage(100 * time.Millisecond)
-    if err != nil {
-        continue
-    }
-    
-    // This simple ReadMessage() triggers:
-    // 1. Fetch request to broker
-    // 2. Segment lookup by offset
-    // 3. Index file binary search  
-    // 4. Log file sequential read
-    // 5. Message parsing and return
-    
-    fmt.Printf("Message: %s\n", string(message.Value))
-}
-```
-
-This shows how Kafka's elegant file structure enables extremely fast random access to any point in the log while maintaining high sequential write performance.
-
-**7. Performance Characteristics:**
-
-- **Log files**: Sequential writes only (O(1) append), sequential reads for consumption
-- **Index files**: Binary search lookups (O(log n)), sparse indexing saves space
-- **Time index files**: Binary search by timestamp (O(log n)), enables time-based queries
-- **Memory mapping**: Kafka uses mmap() to efficiently access index files
-
-This multi-file approach enables Kafka to achieve both high write throughput (sequential log writes) and fast random access (via indexes) while maintaining data durability and consistency.
-
-**Further Reading**: For more detailed information about Kafka log performance and internals, see [Kafka Performance: Kafka Logs](https://www.redpanda.com/guides/kafka-performance-kafka-logs).
-
-### Producers
-
-To write events to the Kafka cluster, there are producers - these are applications that you develop.
-
-The producer program writes a message to Kafka, Kafka saves the events, returns acknowledgment of the write or acknowledgement. The producer receives it and starts the next write.
-
-### Brokers
+### Brokers: The Foundation
 
 The Kafka cluster consists of brokers. You can think of the system as a data center and servers in it. When first getting acquainted, think of a Kafka broker as a computer: it's a process in the operating system with access to its local disk.
 
@@ -792,6 +188,792 @@ The Kafka cluster consists of brokers. You can think of the system as a data cen
 All brokers are connected to each other by a network and act together, forming a single cluster. When we say that producers write events to a Kafka cluster, we mean that they work with brokers in it.
 
 By the way, in a cloud environment, the cluster doesn't necessarily run on dedicated servers - these can be virtual machines or containers in Kubernetes.
+
+### Topics and Partitions
+
+#### Topics: Logical Organization
+
+A topic is a **logical division** of message categories into groups. For example, events by order statuses, partner coordinates, route sheets, and so on.
+
+The key word here is **logical**. Topics are conceptual containers that organize related messages together. We create topics for events of a common group and try not to mix them with each other. For example, partner coordinates should not be in the same topic as order statuses, and updated order statuses should not be stored mixed with user registration updates.
+
+**Topics are logical splits** - they define what kind of data goes where, but they don't determine how the data is physically stored.
+![topics.png](assets/message_queue/topics.png)
+
+It's convenient to think of a topic as a log - you write an event to the end and don't destroy the chain of old events in the process. General logic:
+
+- One producer can write to one or more topics
+- One consumer can read one or more topics
+- One or more producers can write to one topic
+- One or more consumers can read from one topic
+
+Theoretically, there are no restrictions on the number of these topics, but practically this is limited by the number of partitions.
+#### Partitions: Physical Splitting of Data
+![kafka_patrition.png](assets/message_queue/kafka_patrition.png)
+
+While topics provide logical organization, **partitions handle the physical splitting of data**. There are no restrictions on the number of topics in a Kafka cluster, but there are limitations of the computer itself. It performs operations on the processor, input-output, and eventually hits its limit. We cannot increase the power and performance of machines indefinitely, so the topic data must be divided into physical parts.
+
+In Kafka, these physical parts are called **partitions**. Each topic consists of one or more partitions, each of which can be placed on different brokers. This is how Kafka achieves horizontal scaling: you can create a topic, divide it into partitions, and place each partition on a separate broker.
+
+**Key Relationship: Topics ⊃ Partitions**
+- **Topics** = Logical containers (what data category)
+- **Partitions** = Physical storage units (where and how data is stored)
+- Topics are split into partitions for scalability and performance
+
+Formally, a partition is a strictly ordered log of messages stored physically on disk. Each message in it is added to the end without the possibility of changing it in the future and somehow affecting already written messages. At the same time, the topic as a whole has no order, but the order of messages always exists within each individual partition.
+
+**Physical Storage Hierarchy:**
+```
+Topic (logical)
+├── Partition 0 (physical) → Broker 1
+├── Partition 1 (physical) → Broker 2  
+└── Partition 2 (physical) → Broker 3
+```
+
+#### Key-Based Partitioning and Scaling Limitations
+
+Messages in Kafka have a structure that includes a key field:
+
+```go
+type Message struct {
+    Topic       string            `json:"topic"`
+    Partition   int32             `json:"partition,omitempty"`
+    Key         []byte            `json:"key,omitempty"`
+    Value       []byte            `json:"value"`
+    Headers     map[string]string `json:"headers,omitempty"`
+    Timestamp   int64             `json:"timestamp"`
+    Offset      int64             `json:"offset,omitempty"`
+}
+```
+
+**Important Rule: Messages with the same key always go to the same partition.** This is crucial for maintaining order within a key but creates scaling bottlenecks:
+
+**Why same keys go to same partition:**
+- Guarantees message ordering for each unique key
+- Enables stateful processing where related events must be processed together
+- Allows consumers to maintain state per key without coordination
+
+**Scaling Limitation:**
+When all messages have the same key (or a few hot keys), they all end up in the same partition, creating a bottleneck:
+
+```
+Topic: "user-events" 
+Messages with key "user-123":
+├── Message 1 → Partition 2 (based on hash of "user-123")
+├── Message 2 → Partition 2 (same key = same partition)
+├── Message 3 → Partition 2 (same key = same partition)
+└── Message 4 → Partition 2 (same key = same partition)
+
+Result: Only 1 partition handles all "user-123" traffic
+Other partitions may be idle → Poor scaling
+```
+
+This means that even with 100 partitions, if all your messages have the same key, only 1 partition will be used, and you lose the benefits of horizontal scaling.
+
+The partitions themselves are physically represented on disks as segments. These are separate files that can be created, rotated, or deleted according to the data aging settings in them. Usually you don't have to often remember about partition segments unless you administer the cluster, but it's important to remember the data storage model in Kafka topics.
+
+```go
+// Segment represents a physical file storing messages
+type LogSegment struct {
+    BaseOffset   int64     `json:"base_offset"`
+    File         *os.File  `json:"-"`
+    Size         int64     `json:"size"`
+    MaxSize      int64     `json:"max_size"`
+    CreatedAt    time.Time `json:"created_at"`
+    MessageCount int       `json:"message_count"`
+    IsActive     bool      `json:"is_active"`
+}
+
+// Partition contains multiple segments
+type Partition struct {
+    ID            int32          `json:"id"`
+    Topic         string         `json:"topic"`
+    Segments      []*LogSegment  `json:"segments"`
+    ActiveSegment *LogSegment    `json:"active_segment"`
+    HighWaterMark int64          `json:"high_water_mark"`
+    LogStartOffset int64         `json:"log_start_offset"`
+    Leader        BrokerID       `json:"leader"`
+    Replicas      []BrokerID     `json:"replicas"`
+    ISR           []BrokerID     `json:"isr"`
+}
+
+// Topic contains multiple partitions
+type Topic struct {
+    Name             string                `json:"name"`
+    Partitions       map[int32]*Partition  `json:"partitions"`
+    ReplicationFactor int                 `json:"replication_factor"`
+    Config           TopicConfig           `json:"config"`
+}
+
+type TopicConfig struct {
+    RetentionMs     int64  `json:"retention_ms"`
+    SegmentMs       int64  `json:"segment_ms"`
+    CleanupPolicy   string `json:"cleanup_policy"`
+    CompressionType string `json:"compression_type"`
+}
+```
+
+### Coordinator Service: Managing the Cluster
+
+The coordinator acts as the brain of the Kafka cluster, managing metadata, broker orchestration, and service lifecycle. In a traditional Kafka setup, this role is handled by Zookeeper, but in our implementation, we'll build our own lightweight coordinator.
+
+```go
+type Coordinator struct {
+    config       CoordinatorConfig
+    brokers      map[BrokerID]*BrokerInfo
+    topics       map[string]*TopicMetadata
+    assignments  map[PartitionKey]BrokerID
+    serviceManager *ServiceManager
+    console      *ConsoleServer
+    metadata     *MetadataStore
+    mutex        sync.RWMutex
+}
+
+type ServiceManager struct {
+    brokerProcesses  [5]*os.Process
+    producerProcess  *os.Process
+    consumerProcess  *os.Process
+    coordinator      *Coordinator
+}
+
+type BrokerInfo struct {
+    ID       BrokerID     `json:"id"`
+    Host     string       `json:"host"`
+    Port     int          `json:"port"`
+    Status   BrokerStatus `json:"status"`
+    LastSeen time.Time    `json:"last_seen"`
+    Load     BrokerLoad   `json:"load"`
+}
+
+type BrokerStatus int
+
+const (
+    BrokerStarting BrokerStatus = iota
+    BrokerOnline
+    BrokerOffline
+    BrokerDraining
+)
+```
+
+#### Process Management
+
+The coordinator automatically manages all services in the system:
+
+```go
+func (c *Coordinator) StartAll() error {
+    // Start 5 brokers
+    for i := 0; i < 5; i++ {
+        port := 9092 + i
+        brokerID := BrokerID(i)
+        
+        cmd := exec.Command("./bin/broker",
+            "--id", fmt.Sprintf("%d", i),
+            "--port", fmt.Sprintf("%d", port),
+            "--coordinator", "localhost:8080")
+        
+        err := cmd.Start()
+        if err != nil {
+            return fmt.Errorf("failed to start broker %d: %w", i, err)
+        }
+        
+        c.serviceManager.brokerProcesses[i] = cmd.Process
+        
+        // Register broker in coordinator
+        c.registerBroker(BrokerInfo{
+            ID:     brokerID,
+            Host:   "localhost",
+            Port:   port,
+            Status: BrokerStarting,
+        })
+    }
+    
+    // Start producer service
+    producerCmd := exec.Command("./bin/producer",
+        "--port", "9093",
+        "--coordinator", "localhost:8080")
+    
+    err := producerCmd.Start()
+    if err != nil {
+        return fmt.Errorf("failed to start producer: %w", err)
+    }
+    c.serviceManager.producerProcess = producerCmd.Process
+    
+    // Start consumer service
+    consumerCmd := exec.Command("./bin/consumer",
+        "--port", "9094",
+        "--coordinator", "localhost:8080")
+    
+    err = consumerCmd.Start()
+    if err != nil {
+        return fmt.Errorf("failed to start consumer: %w", err)
+    }
+    c.serviceManager.consumerProcess = consumerCmd.Process
+    
+    return nil
+}
+```
+#### Metadata Management
+
+The coordinator tracks all cluster metadata:
+
+```go
+type TopicMetadata struct {
+    Name              string                    `json:"name"`
+    PartitionCount    int32                     `json:"partition_count"`
+    ReplicationFactor int16                     `json:"replication_factor"`
+    Partitions        map[int32]*PartitionInfo  `json:"partitions"`
+    Config            TopicConfig               `json:"config"`
+}
+
+type PartitionInfo struct {
+    TopicName string      `json:"topic_name"`
+    ID        int32       `json:"id"`
+    Leader    BrokerID    `json:"leader"`
+    Replicas  []BrokerID  `json:"replicas"`
+    ISR       []BrokerID  `json:"isr"`
+}
+
+func (c *Coordinator) assignPartitionLeaders() {
+    c.mutex.Lock()
+    defer c.mutex.Unlock()
+    
+    availableBrokers := c.getAvailableBrokers()
+    if len(availableBrokers) == 0 {
+        log.Println("No available brokers for leader assignment")
+        return
+    }
+    
+    // Simple round-robin leader assignment
+    brokerIndex := 0
+    for topicName, topic := range c.topics {
+        for partitionID, partition := range topic.Partitions {
+            // Assign leader in round-robin fashion
+            newLeader := availableBrokers[brokerIndex%len(availableBrokers)]
+            partition.Leader = newLeader
+            
+            log.Printf("Assigned partition %s-%d leader to broker %d", 
+                topicName, partitionID, newLeader)
+            
+            brokerIndex++
+        }
+    }
+}
+```
+In real app  thats handled by zookeeper
+more https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper
+
+## Producers: Writing Messages to the System
+
+To write events to the Kafka cluster, there are producers - these are applications that you develop.
+
+The producer program writes a message to Kafka, Kafka saves the events, returns acknowledgment of the write or acknowledgement. The producer receives it and starts the next write.
+
+### Message Structure
+
+Before diving into producer implementation, let's understand the message format that producers create:
+
+```go
+type Message struct {
+    Topic       string            `json:"topic"`
+    Partition   int32             `json:"partition,omitempty"`
+    Key         []byte            `json:"key,omitempty"`
+    Value       []byte            `json:"value"`
+    Headers     map[string]string `json:"headers,omitempty"`
+    Timestamp   int64             `json:"timestamp"`
+    Offset      int64             `json:"offset,omitempty"`
+}
+
+// Wire format when sent over network
+type WireMessage struct {
+    MagicByte   byte              // Protocol version
+    Attributes  byte              // Compression, timestamp type
+    Timestamp   int64             // Message timestamp
+    KeyLength   int32             // Length of key (-1 if null)
+    Key         []byte            // Message key
+    ValueLength int32             // Length of value
+    Value       []byte            // Message payload
+    Headers     []MessageHeader   // Optional headers
+}
+
+type MessageHeader struct {
+    Key   string `json:"key"`
+    Value []byte `json:"value"`
+}
+```
+
+### Producer Service Implementation
+
+The producer is responsible for publishing messages to topics with intelligent partitioning and batching.
+
+#### Metadata Discovery: How Producer Knows Where to Write
+
+Before sending any messages, the producer must discover cluster metadata. **In real Kafka deployments, this is handled by Zookeeper** (or KRaft in newer versions), which maintains cluster state, broker registry, and topic metadata. 
+
+For more details about Kafka-Zookeeper architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
+
+In our implementation, we use a custom coordinator service instead of Zookeeper:
+
+```go
+type ClusterMetadata struct {
+    Brokers     map[BrokerID]*BrokerInfo     `json:"brokers"`
+    Topics      map[string]*TopicMetadata    `json:"topics"`
+    Partitions  map[PartitionKey]*PartitionInfo `json:"partitions"`
+    UpdatedAt   time.Time                    `json:"updated_at"`
+}
+
+type BrokerInfo struct {
+    ID       BrokerID     `json:"id"`
+    Host     string       `json:"host"`
+    Port     int          `json:"port"`
+    Load     BrokerLoad   `json:"load"`        // Current load metrics
+    Status   BrokerStatus `json:"status"`      // Online/Offline/Draining
+    LastSeen time.Time    `json:"last_seen"`
+}
+
+type BrokerLoad struct {
+    CPUUsage    float64 `json:"cpu_usage"`     // 0.0 - 1.0
+    MemoryUsage float64 `json:"memory_usage"`  // 0.0 - 1.0
+    DiskUsage   float64 `json:"disk_usage"`    // 0.0 - 1.0
+    NetworkIO   int64   `json:"network_io"`    // bytes/sec
+    MessageRate int64   `json:"message_rate"`  // messages/sec
+}
+
+// Producer fetches metadata from coordinator before sending
+func (p *Producer) getClusterMetadata() (*ClusterMetadata, error) {
+    // 1. Contact coordinator to get current cluster state
+    resp, err := http.Get("http://coordinator:8080/api/metadata")
+    if err != nil {
+        return nil, fmt.Errorf("failed to fetch metadata: %w", err)
+    }
+    defer resp.Body.Close()
+    
+    var metadata ClusterMetadata
+    if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+        return nil, fmt.Errorf("failed to parse metadata: %w", err)
+    }
+    
+    return &metadata, nil
+}
+
+// Producer discovers which broker leads each partition
+func (p *Producer) getTopicMetadata(topic string) (*TopicMetadata, error) {
+    metadata, err := p.getClusterMetadata()
+    if err != nil {
+        return nil, err
+    }
+    
+    topicMeta, exists := metadata.Topics[topic]
+    if !exists {
+        return nil, fmt.Errorf("topic %s not found", topic)
+    }
+    
+    // Update partition leader information
+    for partitionID, partition := range topicMeta.Partitions {
+        if brokerInfo, exists := metadata.Brokers[partition.Leader]; exists {
+            partition.LeaderEndpoint = fmt.Sprintf("%s:%d", brokerInfo.Host, brokerInfo.Port)
+            partition.LeaderLoad = brokerInfo.Load
+        }
+    }
+    
+    return topicMeta, nil
+}
+```
+
+#### Load Balancing: Choosing Less Loaded Brokers
+
+The coordinator tracks broker load and helps producers make intelligent decisions:
+
+```go
+// Producer chooses partition based on load balancing
+func (p *Producer) selectOptimalPartition(message *Message, topicMeta *TopicMetadata) int32 {
+    // Strategy 1: If message has key, use key-based partitioning (no choice)
+    if message.Key != nil {
+        hash := murmur3.Sum32(message.Key)
+        return int32(hash % uint32(len(topicMeta.Partitions)))
+    }
+    
+    // Strategy 2: For keyless messages, use load-aware selection
+    return p.loadAwarePartitionSelection(topicMeta)
+}
+
+func (p *Producer) loadAwarePartitionSelection(topicMeta *TopicMetadata) int32 {
+    type PartitionScore struct {
+        ID    int32
+        Score float64  // Lower is better
+    }
+    
+    var scores []PartitionScore
+    
+    for partitionID, partition := range topicMeta.Partitions {
+        // Calculate load score for this partition's leader
+        load := partition.LeaderLoad
+        score := (load.CPUUsage * 0.4) + 
+                 (load.MemoryUsage * 0.3) + 
+                 (load.DiskUsage * 0.2) + 
+                 (float64(load.MessageRate) / 10000.0 * 0.1)
+        
+        scores = append(scores, PartitionScore{
+            ID:    partitionID,
+            Score: score,
+        })
+    }
+    
+    // Sort by score (ascending - lower is better)
+    sort.Slice(scores, func(i, j int) bool {
+        return scores[i].Score < scores[j].Score
+    })
+    
+    // Return partition with lowest load
+    return scores[0].ID
+}
+```
+
+#### Metadata Refresh and Caching
+
+```go
+type Producer struct {
+    clientID         string
+    coordinatorURL   string
+    metadataCache    *ClusterMetadata
+    metadataExpiry   time.Time
+    metadataRefreshInterval time.Duration
+    // ... other fields
+}
+
+func (p *Producer) getMetadataWithCache(topic string) (*TopicMetadata, error) {
+    // Check if cached metadata is still valid
+    if p.metadataCache != nil && time.Now().Before(p.metadataExpiry) {
+        if topicMeta, exists := p.metadataCache.Topics[topic]; exists {
+            return topicMeta, nil
+        }
+    }
+    
+    // Fetch fresh metadata from coordinator
+    metadata, err := p.getClusterMetadata()
+    if err != nil {
+        return nil, err
+    }
+    
+    // Update cache
+    p.metadataCache = metadata
+    p.metadataExpiry = time.Now().Add(p.metadataRefreshInterval)
+    
+    topicMeta, exists := metadata.Topics[topic]
+    if !exists {
+        return nil, fmt.Errorf("topic %s not found", topic)
+    }
+    
+    return topicMeta, nil
+}
+```
+
+**Key Points:**
+- **In real Kafka**: Producer asks **Zookeeper** (or KRaft controller) for cluster metadata
+- **In our implementation**: Producer asks our custom **coordinator service** for metadata
+- **Metadata includes**: Which broker leads each partition and their current load
+- **Load balancing** happens only for keyless messages (keyed messages must go to specific partition)
+- **Metadata is cached** to avoid hitting metadata service on every message
+- **Fresh metadata** is fetched when cache expires or on errors
+
+**Real Kafka vs Our Implementation:**
+- **Real Kafka**: Zookeeper → Brokers → Producers get metadata
+- **Our System**: Coordinator → Brokers → Producers get metadata
+- **Same principles**, different metadata management system
+
+```go
+type Producer struct {
+    clientID     string
+    brokers      []string
+    partitioner  Partitioner
+    batcher      *MessageBatcher
+    serializer   Serializer
+    ackLevel     AckLevel
+    retryConfig  RetryConfig
+    metrics      *ProducerMetrics
+}
+
+type ProducerConfig struct {
+    Brokers         []string        `yaml:"brokers"`
+    ClientID        string          `yaml:"client_id"`
+    BatchSize       int             `yaml:"batch_size"`
+    LingerMs        int             `yaml:"linger_ms"`
+    Retries         int             `yaml:"retries"`
+    AckLevel        AckLevel        `yaml:"ack_level"`
+    Compression     CompressionType `yaml:"compression"`
+    RequestTimeout  time.Duration   `yaml:"request_timeout"`
+}
+
+// Send publishes a message to a topic
+func (p *Producer) Send(topic string, message *Message) error {
+    message.Topic = topic
+    message.Timestamp = time.Now().UnixNano()
+    
+    // 1. Serialize the message
+    serializedMsg, err := p.serializer.Serialize(message)
+    if err != nil {
+        return fmt.Errorf("serialization failed: %w", err)
+    }
+    
+    // 2. Select partition using partitioner
+    topicMetadata := p.getTopicMetadata(topic)
+    partition := p.partitioner.Partition(message, topicMetadata)
+    message.Partition = partition
+    
+    // 3. Add to batch
+    if p.batcher.Add(*message) {
+        // Batch is ready, send it
+        return p.flushBatch()
+    }
+    
+    return nil
+}
+
+func (p *Producer) flushBatch() error {
+    batch := p.batcher.Flush()
+    if len(batch) == 0 {
+        return nil
+    }
+    
+    // Group messages by partition
+    partitionBatches := make(map[int32][]Message)
+    for _, msg := range batch {
+        partitionBatches[msg.Partition] = append(partitionBatches[msg.Partition], msg)
+    }
+    
+    // Send to brokers
+    var wg sync.WaitGroup
+    for partition, messages := range partitionBatches {
+        wg.Add(1)
+        go func(p int32, msgs []Message) {
+            defer wg.Done()
+            err := p.sendToPartition(p, msgs)
+            if err != nil {
+                log.Printf("Failed to send batch to partition %d: %v", p, err)
+                // Implement retry logic here
+            }
+        }(partition, messages)
+    }
+    
+    wg.Wait()
+    return nil
+}
+```
+
+### Load Distribution Algorithms
+
+Kafka producers use various algorithms to distribute messages across partitions:
+
+#### 1. Partition Selection Strategies
+
+```go
+type Partitioner interface {
+    Partition(message *Message, metadata *TopicMetadata) int32
+}
+
+// Round-robin partitioner
+type RoundRobinPartitioner struct {
+    counter int32
+}
+
+func (r *RoundRobinPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
+    partitionCount := metadata.PartitionCount
+    partition := atomic.AddInt32(&r.counter, 1) % partitionCount
+    return partition
+}
+
+// Key-based partitioner (consistent hashing)
+type KeyPartitioner struct{}
+
+func (k *KeyPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
+    if message.Key == nil {
+        // No key, use round-robin
+        return rand.Int31n(metadata.PartitionCount)
+    }
+    
+    hash := murmur3.Sum32(message.Key)
+    return int32(hash % uint32(metadata.PartitionCount))
+}
+
+// Sticky partitioner (Apache Kafka 2.4+)
+type StickyPartitioner struct {
+    stickyPartition int32
+    batchIsFull     bool
+    mutex           sync.Mutex
+}
+
+func (s *StickyPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
+    s.mutex.Lock()
+    defer s.mutex.Unlock()
+    
+    if message.Key != nil {
+        // Messages with keys always go to same partition
+        hash := murmur3.Sum32(message.Key)
+        return int32(hash % uint32(metadata.PartitionCount))
+    }
+    
+    // For messages without keys, stick to one partition until batch is full
+    if s.stickyPartition == -1 || s.batchIsFull {
+        s.stickyPartition = rand.Int31n(metadata.PartitionCount)
+        s.batchIsFull = false
+    }
+    
+    return s.stickyPartition
+}
+```
+
+#### 2. How Kafka Producer Chooses Partitions
+
+The partition selection algorithm is crucial for performance and ordering:
+
+**Key-based Partitioning:**
+- Messages with the same key always go to the same partition
+- Guarantees ordering within a key
+- Can cause hotspots if key distribution is uneven
+
+**Round-robin Distribution:**
+- Distributes load evenly across all partitions
+- Good for throughput when ordering isn't required
+- Simple but can fragment batches
+
+**Sticky Partitioning:**
+- Batches messages to the same partition until batch is full
+- Reduces latency by improving batch efficiency
+- Better network utilization
+
+```go
+func (p *Producer) selectPartition(message *Message, topicMetadata *TopicMetadata) int32 {
+    // Strategy 1: If partition is explicitly set, use it
+    if message.Partition >= 0 {
+        return message.Partition
+    }
+    
+    // Strategy 2: If message has key, use key-based partitioning
+    if message.Key != nil {
+        return p.keyBasedPartition(message.Key, topicMetadata.PartitionCount)
+    }
+    
+    // Strategy 3: Use sticky partitioning for better batching
+    return p.stickyPartitioner.Partition(message, topicMetadata)
+}
+
+func (p *Producer) keyBasedPartition(key []byte, partitionCount int32) int32 {
+    hash := murmur3.Sum32(key)
+    return int32(hash % uint32(partitionCount))
+}
+```
+
+### Message Batching System
+
+Batching is crucial for throughput optimization:
+
+```go
+type MessageBatcher struct {
+    maxBatchSize  int           // Maximum messages per batch
+    maxBatchBytes int           // Maximum bytes per batch
+    lingerTime    time.Duration // How long to wait for batch to fill
+    batches       map[int32]*PartitionBatch
+    flushChan     chan int32
+    mutex         sync.Mutex
+}
+
+type PartitionBatch struct {
+    partition     int32
+    messages      []Message
+    totalBytes    int
+    createdAt     time.Time
+    flushTimer    *time.Timer
+}
+
+func (b *MessageBatcher) Add(message Message) bool {
+    b.mutex.Lock()
+    defer b.mutex.Unlock()
+    
+    partition := message.Partition
+    batch := b.batches[partition]
+    
+    if batch == nil {
+        batch = &PartitionBatch{
+            partition:  partition,
+            messages:   make([]Message, 0, b.maxBatchSize),
+            createdAt:  time.Now(),
+        }
+        b.batches[partition] = batch
+        
+        // Set timer for batch flush
+        batch.flushTimer = time.AfterFunc(b.lingerTime, func() {
+            b.flushChan <- partition
+        })
+    }
+    
+    // Add message to batch
+    batch.messages = append(batch.messages, message)
+    batch.totalBytes += len(message.Key) + len(message.Value)
+    
+    // Check if batch should be flushed
+    shouldFlush := len(batch.messages) >= b.maxBatchSize || 
+                   batch.totalBytes >= b.maxBatchBytes
+    
+    if shouldFlush {
+        batch.flushTimer.Stop()
+        return true // Signal caller to flush
+    }
+    
+    return false
+}
+
+func (b *MessageBatcher) Flush() []Message {
+    b.mutex.Lock()
+    defer b.mutex.Unlock()
+    
+    var allMessages []Message
+    for partition, batch := range b.batches {
+        if batch.flushTimer != nil {
+            batch.flushTimer.Stop()
+        }
+        allMessages = append(allMessages, batch.messages...)
+        delete(b.batches, partition)
+    }
+    
+    return allMessages
+}
+```
+
+### Delivery Semantics
+
+```go
+type DeliverySemantics int
+
+const (
+    AtMostOnce DeliverySemantics = iota  // May lose messages, no duplicates
+    AtLeastOnce                          // No message loss, possible duplicates  
+    ExactlyOnce                          // No loss, no duplicates (expensive)
+)
+
+type AckLevel int
+
+const (
+    NoAck     AckLevel = 0  // Fire and forget
+    LeaderAck AckLevel = 1  // Wait for leader acknowledgment
+    AllAck    AckLevel = -1 // Wait for all in-sync replicas
+)
+
+func (p *Producer) sendWithAcks(messages []Message, ackLevel AckLevel) error {
+    switch ackLevel {
+    case NoAck:
+        // Fire and forget - fastest but least reliable
+        return p.sendAsync(messages)
+        
+    case LeaderAck:
+        // Wait for leader acknowledgment - balanced approach
+        return p.sendSyncToLeader(messages)
+        
+    case AllAck:
+        // Wait for all ISR replicas - strongest guarantee
+        return p.sendSyncToAll(messages)
+    }
+    return nil
+}
+```
 
 ### Consumers
 
