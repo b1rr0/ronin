@@ -19,7 +19,7 @@ Message queues solve fundamental problems in distributed systems by enabling asy
 ![2_syn_microservices.png](assets/message_queue/2_syn_microservices.png)
 
 ## • Services can operate independently in time
-## • Senders don't wait for receivers to become available
+## • Senders don't wait for receivers to become available  
 ## • Decouples service lifecycles and deployment schedules
 
 ### Improved Fault Tolerance
@@ -699,9 +699,9 @@ const (
 ```
 
 func (b *MessageBatcher) flushTimer() {
-ticker := time.NewTicker(b.maxWait / 2)
-defer ticker.Stop()
-
+    ticker := time.NewTicker(b.maxWait / 2)
+    defer ticker.Stop()
+    
     for {
         select {
         case <-ticker.C:
@@ -714,9 +714,9 @@ defer ticker.Stop()
 }
 
 func (b *MessageBatcher) Flush() []Message {
-b.mutex.Lock()
-defer b.mutex.Unlock()
-
+    b.mutex.Lock()
+    defer b.mutex.Unlock()
+    
     if len(b.messages) == 0 {
         return nil
     }
@@ -838,9 +838,9 @@ func (c *Consumer) processMessages(messages []Message) error {
 
 // Poll retrieves messages from assigned partitions
 func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
-ctx, cancel := context.WithTimeout(context.Background(), timeout)
-defer cancel()
-
+    ctx, cancel := context.WithTimeout(context.Background(), timeout)
+    defer cancel()
+    
     var allMessages []Message
     
     for topic, partitions := range c.assignment {
@@ -868,15 +868,15 @@ defer cancel()
 
 // Commit offsets for processed messages
 func (c *Consumer) CommitSync() error {
-return c.coordinator.CommitOffsets(c.groupID, c.offsets)
+    return c.coordinator.CommitOffsets(c.groupID, c.offsets)
 }
 
 func (c *Consumer) CommitAsync() {
-go func() {
-if err := c.CommitSync(); err != nil {
-log.Printf("Failed to commit offsets: %v", err)
-}
-}()
+    go func() {
+        if err := c.CommitSync(); err != nil {
+            log.Printf("Failed to commit offsets: %v", err)
+        }
+    }()
 }
 ```
 
