@@ -1,7 +1,7 @@
 ---
 layout: page
 title: Message Queue System
-permalink: /message-queue-/
+permalink: /message-queue/
 ---
 
 <style>
