@@ -84,12 +84,12 @@ Message queues solve fundamental problems in distributed systems by enabling asy
 
 **Instead of complex synchronous interactions between multiple services, we can simplify with a queue:**
 
-<img src="assets/message_queue/1_write_to_queue_4_read.png" alt="Write to Queue and Read" style="max-width: 100%; height: auto;" />
+![1_write_to_queue_4_read.png](assets/message_queue/1_write_to_queue_4_read.png)
 
 #### Why Not Just Use Simple Programming Language Queues?
 
 You might think: "Why not just use a simple queue from a programming language where first-in-first-out (FIFO) works?" Indeed, we could use basic data structures like queues from standard libraries:
-<img src="assets/message_queue/queue_as_data_strucure.png" alt="Queue as Data Structure" style="max-width: 100%; height: auto;" />
+![queue_as_data_strucure.png](assets/message_queue/queue_as_data_strucure.png)
 ```go
 type SimpleQueue struct {
     items []Message
@@ -143,7 +143,7 @@ Various message brokers exist, each with different trade-offs:
 
 ### CAP Theorem and Message Brokers
 
-<img src="assets/message_queue/CAP_theorem.png" alt="CAP Theorem" style="max-width: 100%; height: auto;" />
+![CAP_theorem_ .png](assets/message_queue/CAP_theorem_ .png)
 
 #### How CAP Theorem Relates to Message Brokers
 
@@ -193,7 +193,7 @@ The producer program writes a message to Kafka, Kafka saves the events, returns 
 
 The Kafka cluster consists of brokers. You can think of the system as a data center and servers in it. When first getting acquainted, think of a Kafka broker as a computer: it's a process in the operating system with access to its local disk.
 
-<img src="assets/message_queue/kaffka_classter_intro.png" alt="Kafka Cluster Architecture" style="max-width: 100%; height: auto;" />
+![kaffka_classter_intro.png](assets/message_queue/kaffka_classter_intro.png)
 
 All brokers are connected to each other by a network and act together, forming a single cluster. When we say that producers write events to a Kafka cluster, we mean that they work with brokers in it.
 
