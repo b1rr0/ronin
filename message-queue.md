@@ -19,6 +19,7 @@ img {
   margin: 0 auto;
 }
 
+
 code {
   word-wrap: break-word;
   overflow-wrap: break-word;
@@ -37,6 +38,7 @@ pre {
   pre {
     font-size: 14px;
   }
+  
 }
 </style>
 
@@ -193,6 +195,8 @@ The producer program writes a message to Kafka, Kafka saves the events, returns 
 ### Brokers
 
 The Kafka cluster consists of brokers. You can think of the system as a data center and servers in it. When first getting acquainted, think of a Kafka broker as a computer: it's a process in the operating system with access to its local disk.
+
+<img src="assets/message_queue/kaffka_classter_intro.png" alt="Kafka Cluster Architecture" style="max-width: 100%; height: auto;" />
 
 All brokers are connected to each other by a network and act together, forming a single cluster. When we say that producers write events to a Kafka cluster, we mean that they work with brokers in it.
 
