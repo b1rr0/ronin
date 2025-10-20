@@ -504,9 +504,6 @@ func (c *Coordinator) assignPartitionLeaders() {
     }
 }
 ```
-
-### ***Note:*** In real applications, this coordination and metadata management is handled by Zookeeper (or **KRaft** in newer Kafka versions). For more details about this architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
-
 ## Producers: Writing Messages to the System
 
 To write events to the Kafka cluster, there are producers - these are applications that you develop.
@@ -551,7 +548,6 @@ type MessageHeader struct {
 The producer is responsible for publishing messages to topics with intelligent partitioning and batching.
 
 ![producer_write_to_partitions.png](assets/message_queue/producer_write_to_partitions.png)
-
 #### Metadata Discovery: How Producer Knows Where to Write
 
 Before sending any messages, the producer must discover cluster metadata from the coordinator service (as described in the Coordinator section above):
@@ -933,49 +929,6 @@ func (p *Producer) sendWithAcks(messages []Message, ackLevel AckLevel) error {
         return p.sendSyncToAll(messages)
     }
     return nil
-}
-```
-
-### Consumers
-
-Events that producers write to local broker disks can be read by consumers - these are also applications that you develop. In this case, the Kafka cluster is still something served by infrastructure, where you as a user write producers and consumers. The consumer program subscribes to events or polls and receives data in response. This continues in a loop.
-
-## System Components
-
-### Core Architecture
-
-Our message queue system consists of several key components working together:
-
-```go
-// Core message structure
-type Message struct {
-    Key       []byte            `json:"key"`
-    Value     []byte            `json:"value"`
-    Headers   map[string]string `json:"headers"`
-    Timestamp int64             `json:"timestamp"`
-    Offset    int64             `json:"offset"`
-    Partition int32             `json:"partition"`
-    Topic     string            `json:"topic"`
-}
-
-// Topic represents a logical channel for messages
-type Topic struct {
-    Name         string      `json:"name"`
-    Partitions   []Partition `json:"partitions"`
-    ReplicationFactor int    `json:"replication_factor"`
-    RetentionMs  int64       `json:"retention_ms"`
-    CreatedAt    time.Time   `json:"created_at"`
-}
-
-// Partition represents a ordered, immutable sequence of messages
-type Partition struct {
-    ID          int32     `json:"id"`
-    Topic       string    `json:"topic"`
-    Leader      BrokerID  `json:"leader"`
-    Replicas    []BrokerID `json:"replicas"`
-    ISR         []BrokerID `json:"isr"` // In-Sync Replicas
-    LogSize     int64     `json:"log_size"`
-    HighWaterMark int64   `json:"high_water_mark"`
 }
 ```
 
