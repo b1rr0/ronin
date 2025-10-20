@@ -60,6 +60,12 @@ Message queues solve fundamental problems in distributed systems by enabling asy
 - **Senders don't wait for receivers to become available**
 - **Decouples service lifecycles and deployment schedules**
 
+![1_sync_micrpservice_with_5_another_services.png](assets/message_queue/1_sync_micrpservice_with_5_another_services.png)
+
+**Instead of complex synchronous interactions between multiple services, we can simplify with a queue:**
+
+![1_write_to_queue_4_read.png](assets/message_queue/1_write_to_queue_4_read.png)
+
 #### Improved Fault Tolerance
 - **When a receiver temporarily crashes, messages are stored in the queue and processed later**
 - **Reduces risk of data loss during service outages**
@@ -79,12 +85,6 @@ Message queues solve fundamental problems in distributed systems by enabling asy
 - **Messages are not lost (or rarely lost, depending on configuration)**
 - **Can implement guaranteed delivery ("at least once", "exactly once")**
 - **Provides audit trail and replay capabilities**
-
-![1_sync_micrpservice_with_5_another_services.png](assets/message_queue/1_sync_micrpservice_with_5_another_services.png)
-
-**Instead of complex synchronous interactions between multiple services, we can simplify with a queue:**
-
-![1_write_to_queue_4_read.png](assets/message_queue/1_write_to_queue_4_read.png)
 
 #### Why Not Just Use Simple Programming Language Queues?
 
@@ -315,7 +315,16 @@ type TopicConfig struct {
 
 ### Coordinator Service: Managing the Cluster
 
-The coordinator acts as the brain of the Kafka cluster, managing metadata, broker orchestration, and service lifecycle. In a traditional Kafka setup, this role is handled by Zookeeper, but in our implementation, we'll build our own lightweight coordinator.
+The coordinator acts as the brain of the Kafka cluster, managing metadata, broker orchestration, and service lifecycle. **In a traditional Kafka setup, this role is handled by Zookeeper** (or KRaft in newer versions), which maintains cluster state, broker registry, and topic metadata.
+
+For more details about Kafka-Zookeeper architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
+
+**Real Kafka vs Our Implementation:**
+- **Real Kafka**: Zookeeper manages cluster metadata, leader election, and broker coordination
+- **Our System**: Custom coordinator service handles the same responsibilities
+- **Same principles**, simplified implementation for learning
+
+In our implementation, we'll build our own lightweight coordinator that:
 
 ```go
 type Coordinator struct {
@@ -507,11 +516,7 @@ The producer is responsible for publishing messages to topics with intelligent p
 
 #### Metadata Discovery: How Producer Knows Where to Write
 
-Before sending any messages, the producer must discover cluster metadata. **In real Kafka deployments, this is handled by Zookeeper** (or KRaft in newer versions), which maintains cluster state, broker registry, and topic metadata. 
-
-For more details about Kafka-Zookeeper architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
-
-In our implementation, we use a custom coordinator service instead of Zookeeper:
+Before sending any messages, the producer must discover cluster metadata from the coordinator service (as described in the Coordinator section above):
 
 ```go
 type ClusterMetadata struct {
@@ -668,17 +673,11 @@ func (p *Producer) getMetadataWithCache(topic string) (*TopicMetadata, error) {
 ```
 
 **Key Points:**
-- **In real Kafka**: Producer asks **Zookeeper** (or KRaft controller) for cluster metadata
-- **In our implementation**: Producer asks our custom **coordinator service** for metadata
-- **Metadata includes**: Which broker leads each partition and their current load
+- **Producer asks coordinator** for cluster metadata (topics, partitions, broker locations and load)
 - **Load balancing** happens only for keyless messages (keyed messages must go to specific partition)
-- **Metadata is cached** to avoid hitting metadata service on every message
+- **Metadata is cached** to avoid hitting coordinator on every message
 - **Fresh metadata** is fetched when cache expires or on errors
-
-**Real Kafka vs Our Implementation:**
-- **Real Kafka**: Zookeeper → Brokers → Producers get metadata
-- **Our System**: Coordinator → Brokers → Producers get metadata
-- **Same principles**, different metadata management system
+- **Smart partition selection** based on broker load metrics (CPU, memory, disk, message rate)
 
 ```go
 type Producer struct {
