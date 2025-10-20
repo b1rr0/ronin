@@ -665,7 +665,7 @@ The coordinator tracks broker load and helps producers make intelligent decision
 
 Producers use different algorithms to distribute messages across partitions. Each strategy serves specific use cases:
 
-### 1. Round-Robin Partitioning
+###### 1. Round-Robin Partitioning
 
 **Algorithm:** Distributes messages evenly across all partitions using a rotating counter.
 
@@ -687,7 +687,7 @@ func (r *RoundRobinPartitioner) Partition(message *Message, metadata *TopicMetad
 }
 ```
 
-### 2. Key-Based Partitioning (Consistent Hashing)
+###### 2. Key-Based Partitioning (Consistent Hashing)
 
 **Algorithm:** Uses message key hash to determine partition, ensuring same keys always go to same partition.
 
@@ -710,7 +710,7 @@ func (k *KeyPartitioner) Partition(message *Message, metadata *TopicMetadata) in
 }
 ```
 
-### 3. Sticky Partitioning
+###### 3. Sticky Partitioning
 
 **Algorithm:** Batches keyless messages to same partition until batch is full, then switches.
 
@@ -745,7 +745,7 @@ func (s *StickyPartitioner) Partition(message *Message, metadata *TopicMetadata)
 }
 ```
 
-### 4. Load-Aware Selection
+###### 4. Load-Aware Selection
 
 **Algorithm:** Chooses partition based on real-time broker load metrics.
 
