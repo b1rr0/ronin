@@ -89,18 +89,6 @@ Message queues solve fundamental problems in distributed systems by enabling asy
 #### Why Not Just Use Simple Programming Language Queues?
 
 You might think: "Why not just use a simple queue from a programming language where first-in-first-out (FIFO) works?" Indeed, we could use basic data structures like queues from standard libraries:
-
-However, this approach has a critical problem: **when we dequeue a message, we no longer store it anywhere**. If we retrieve a message and our consumer becomes unavailable (crashes, network issues, etc.), we lose that data permanently. The message is gone from the queue but never processed.
-
-#### Why Message Brokers Are More Sophisticated
-
-This is exactly why message brokers are more sophisticated. They solve this fundamental reliability problem by:
-
-- **Persistent storage**: Messages are stored on disk, not just in memory
-- **Acknowledgment mechanisms**: Messages remain in the broker until explicitly acknowledged
-- **Offset tracking**: Consumers can track their position and resume from where they left off
-- **Replication**: Multiple copies ensure data isn't lost when servers fail
-
 <img src="assets/message_queue/queue_as_data_strucure.png" alt="Queue as Data Structure" style="max-width: 100%; height: auto;" />
 ```go
 type SimpleQueue struct {
@@ -127,6 +115,16 @@ defer q.mutex.Unlock()
     return msg, true
 }
 ```
+However, this approach has a critical problem: **when we dequeue a message, we no longer store it anywhere**. If we retrieve a message and our consumer becomes unavailable (crashes, network issues, etc.), we lose that data permanently. The message is gone from the queue but never processed.
+
+#### Why Message Brokers Are More Sophisticated
+
+This is exactly why message brokers are more sophisticated. They solve this fundamental reliability problem by:
+
+- **Persistent storage**: Messages are stored on disk, not just in memory
+- **Acknowledgment mechanisms**: Messages remain in the broker until explicitly acknowledged
+- **Offset tracking**: Consumers can track their position and resume from where they left off
+- **Replication**: Multiple copies ensure data isn't lost when servers fail
 
 
 
@@ -138,7 +136,6 @@ A message queue acts as a temporary storage and routing mechanism between produc
 
 Various message brokers exist, each with different trade-offs:
 
-**Kafka vs. RabbitMQ**
 - **Kafka**: High-throughput, log-based, designed for stream processing
 - **RabbitMQ**: Traditional messaging patterns, complex routing, lower latency
 - **AWS SQS/SNS**: Managed services, simple integration, limited throughput
@@ -146,7 +143,7 @@ Various message brokers exist, each with different trade-offs:
 
 ### CAP Theorem and Message Brokers
 
-<img src="assets/message_queue/CAP_theorem_%20.png" alt="CAP Theorem" style="max-width: 100%; height: auto;" />
+<img src="assets/message_queue/CAP_theorem.png" alt="CAP Theorem" style="max-width: 100%; height: auto;" />
 
 #### How CAP Theorem Relates to Message Brokers
 
