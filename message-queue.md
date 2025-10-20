@@ -42,13 +42,11 @@ pre {
 }
 </style>
 
-# Message Queue System: Building a Kafka-like System from Scratch
+# Inside Message Broker
 
 ## Introduction
 
-### Why Do We Need Message Queues?
-
-Message queues solve fundamental problems in distributed systems by enabling asynchronous communication between services. They provide a robust foundation for building scalable, resilient architectures.
+In the world of multi-tier distributed systems, there is a critical need for message queues. They solve fundamental communication problems between services, providing reliable asynchronous data transmission and creating the foundation for scalable, fault-tolerant architectures.
 
 ## Problems Solved by Message Queues
 
@@ -59,6 +57,8 @@ Message queues solve fundamental problems in distributed systems by enabling asy
 - **Services can operate independently in time**
 - **Senders don't wait for receivers to become available**
 - **Decouples service lifecycles and deployment schedules**
+
+Instead of making sequential calls to multiple microservices, message queues enable rapid message delivery to several microservices simultaneously. A single message can be published once and consumed by multiple services, dramatically reducing latency and eliminating the complexity of coordinating synchronous calls across distributed systems.
 
 ![1_sync_micrpservice_with_5_another_services.png](assets/message_queue/1_sync_micrpservice_with_5_another_services.png)
 
@@ -620,9 +620,11 @@ func (p *Producer) getTopicMetadata(topic string) (*TopicMetadata, error) {
 }
 ```
 
-#### Load Balancing: Choosing Less Loaded Brokers
+#### Load Balancing and Metadata Management
 
-The coordinator tracks broker load and helps producers make intelligent decisions:
+The coordinator tracks broker load and helps producers make intelligent decisions. This process involves both selecting optimal partitions and efficiently managing metadata:
+
+**Load-Aware Partition Selection:**
 
 ```go
 // Producer chooses partition based on load balancing
@@ -669,7 +671,7 @@ func (p *Producer) loadAwarePartitionSelection(topicMeta *TopicMetadata) int32 {
 }
 ```
 
-#### Metadata Refresh and Caching
+**Metadata Caching for Performance:**
 
 ```go
 type Producer struct {
@@ -714,6 +716,8 @@ func (p *Producer) getMetadataWithCache(topic string) (*TopicMetadata, error) {
 - **Metadata is cached** to avoid hitting coordinator on every message
 - **Fresh metadata** is fetched when cache expires or on errors
 - **Smart partition selection** based on broker load metrics (CPU, memory, disk, message rate)
+
+**For more information about load balancing challenges and solutions in Apache Kafka, see:** [How We Solve Load Balancing Challenges in Apache Kafka](https://medium.com/agoda-engineering/how-we-solve-load-balancing-challenges-in-apache-kafka-8cd88fdad02b)
 
 ```go
 type Producer struct {
