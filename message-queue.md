@@ -64,6 +64,14 @@ pre code .comment { color: #6a9955 !important; }
 pre code .function { color: #dcdcaa !important; }
 pre code .type { color: #4ec9b0 !important; }
 
+/* Header hierarchy styles */
+h1 { font-size: 2.5rem !important; }
+h2 { font-size: 2.0rem !important; }
+h3 { font-size: 1.5rem !important; }
+h4 { font-size: 1.25rem !important; }
+h5 { font-size: 1.1rem !important; }
+h6 { font-size: 1.0rem !important; }
+
 @media (max-width: 768px) {
   img {
     max-width: 95%;
@@ -100,27 +108,27 @@ Instead of making sequential calls to multiple microservices, message queues ena
 
 ![1_write_to_queue_4_read.png](assets/message_queue/1_write_to_queue_4_read.png)
 
-#### Improved Fault Tolerance
-- **When a receiver temporarily crashes, messages are stored in the queue and processed later**
-- **Reduces risk of data loss during service outages**
-- **Provides graceful degradation under failure conditions**
+**Improved Fault Tolerance:**
+- When a receiver temporarily crashes, messages are stored in the queue and processed later
+- Reduces risk of data loss during service outages
+- Provides graceful degradation under failure conditions
 
-#### Scalability
-- **Easy to add more consumers (workers) to process messages faster**
-- **Queue distributes load between multiple consumers**
-- **Horizontal scaling without architectural changes**
+**Scalability:**
+- Easy to add more consumers (workers) to process messages faster
+- Queue distributes load between multiple consumers
+- Horizontal scaling without architectural changes
 
-#### Load Buffering
-- **When incoming request flow is very large, the queue temporarily "smooths" the load**
-- **Protects the system from overload situations**
-- **Acts as a shock absorber for traffic spikes**
+**Load Buffering:**
+- When incoming request flow is very large, the queue temporarily "smooths" the load
+- Protects the system from overload situations
+- Acts as a shock absorber for traffic spikes
 
-#### Reliable Data Transmission and Logging
+**Reliable Data Transmission and Logging:**
 - **Messages are not lost (or rarely lost, depending on configuration)**
 - **Can implement guaranteed delivery ("at least once", "exactly once")**
 - **Provides audit trail and replay capabilities**
 
-#### Why Not Just Use Simple Programming Language Queues?
+### Why Not Just Use Simple Programming Language Queues?
 
 You might think: "Why not just use a simple queue from a programming language where first-in-first-out (FIFO) works?" Indeed, we could use basic data structures like queues from standard libraries:
 ![queue_as_data_strucure.png](assets/message_queue/queue_as_data_strucure.png)
@@ -151,11 +159,11 @@ defer q.mutex.Unlock()
 ```
 However, this approach has a critical problem: **when we dequeue a message, we no longer store it anywhere**. If we retrieve a message and our consumer becomes unavailable (crashes, network issues, etc.), we lose that data permanently. The message is gone from the queue but never processed.
 
-#### What Makes Message Brokers Production-Ready
+### What Makes Message Brokers Production-Ready
 
 Message brokers are sophisticated distributed systems designed to solve enterprise-grade messaging challenges. They consist of several core components and differ significantly in their architecture and trade-offs:
 
-#### Core Components of Message Brokers
+#### 1. Core Components of Message Brokers
 
 All modern message brokers share these fundamental building blocks:
 
@@ -179,7 +187,7 @@ All modern message brokers share these fundamental building blocks:
 - **Leader/follower replication**: Ensure no data loss during failures
 - **Automatic failover**: Seamless leader election when nodes fail
 
-#### Message Broker Architecture Patterns
+#### 2. Message Broker Architecture Patterns
 
 **Log-Based Architecture (Kafka, Pulsar)**
 ```
@@ -202,7 +210,7 @@ Built-in durability and scaling handled by cloud provider
 Event-driven triggers and integrations
 ```
 
-#### Different Message Brokers Comparison
+#### 3. Different Message Brokers Comparison
 
 Various message brokers exist, each with different trade-offs:
 
