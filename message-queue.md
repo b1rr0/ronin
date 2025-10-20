@@ -308,6 +308,187 @@ When a consumer requests messages starting from offset 15,000:
 
 This log-centric design is what makes Kafka incredibly fast and scalable, capable of handling millions of messages per second while providing strong durability guarantees.
 
+#### Internal File Structure Details
+
+Now let's dive deeper into how each file type stores data internally:
+
+**1. Log Files (.log) - Message Data Storage:**
+
+The .log files contain the actual message data in a binary format. Each message is stored with the following structure:
+
+```
+Message Record Format:
+┌─────────────┬──────────────┬─────────────┬──────────────┬─────────────┬─────────────┐
+│   Offset    │  Message     │   CRC32     │  Magic Byte  │  Attributes │  Timestamp  │
+│   8 bytes   │  Size        │   4 bytes   │   1 byte     │   1 byte    │   8 bytes   │
+│   (int64)   │  4 bytes     │             │              │             │             │
+└─────────────┼──────────────┼─────────────┼──────────────┼─────────────┼─────────────┤
+│  Key Length │  Key Data    │ Value Length│  Value Data  │   Headers   │             │
+│   4 bytes   │  N bytes     │   4 bytes   │   M bytes    │  Variable   │             │
+│   (int32)   │              │   (int32)   │              │             │             │
+└─────────────┴──────────────┴─────────────┴──────────────┴─────────────┴─────────────┘
+```
+
+Example message in hexadecimal:
+```
+00 00 00 00 00 00 30 39  // Offset: 12345
+00 00 00 4A              // Message size: 74 bytes
+B4 8F 2A 1C              // CRC32 checksum
+02                       // Magic byte (version 2)
+00                       // Attributes (no compression)
+00 00 01 7F 8E 9A BC DE  // Timestamp
+00 00 00 08              // Key length: 8 bytes
+75 73 65 72 2D 31 32 33  // Key: "user-123"
+00 00 00 2A              // Value length: 42 bytes
+7B 22 61 63 74 69 6F 6E  // Value: {"action":"login",...}
+...
+```
+
+**2. Index Files (.index) - Offset to Position Mapping:**
+
+Index files provide fast lookup from logical offsets to physical byte positions in the log file. They use a compact binary format:
+
+```
+Index Entry Format (8 bytes each):
+┌──────────────┬─────────────────┐
+│ Relative     │ Physical        │
+│ Offset       │ Position        │
+│ 4 bytes      │ 4 bytes         │
+│ (int32)      │ (int32)         │
+└──────────────┴─────────────────┘
+```
+
+Index entries are sorted by offset and stored every N messages (default: every 4KB of log data). Example:
+
+```go
+type IndexEntry struct {
+    RelativeOffset uint32  // Offset relative to segment base offset
+    Position       uint32  // Byte position in .log file
+}
+
+// Example index entries for segment starting at offset 12345:
+// Entry 1: RelativeOffset=0,    Position=0      (offset 12345 at byte 0)
+// Entry 2: RelativeOffset=100,  Position=8192   (offset 12445 at byte 8192)
+// Entry 3: RelativeOffset=200,  Position=16384  (offset 12545 at byte 16384)
+```
+
+**3. Time Index Files (.timeindex) - Timestamp to Offset Mapping:**
+
+Time index files enable time-based queries by mapping timestamps to offsets:
+
+```
+Time Index Entry Format (12 bytes each):
+┌──────────────┬──────────────┬─────────────────┐
+│ Timestamp    │ Relative     │ (Padding)       │
+│ 8 bytes      │ Offset       │ 0 bytes         │
+│ (int64)      │ 4 bytes      │                 │
+│              │ (int32)      │                 │
+└──────────────┴──────────────┴─────────────────┘
+```
+
+Example time index entries:
+
+```go
+type TimeIndexEntry struct {
+    Timestamp      int64   // Unix timestamp in milliseconds
+    RelativeOffset uint32  // Offset relative to segment base offset
+}
+
+// Example entries:
+// Entry 1: Timestamp=1640995200000, RelativeOffset=0    (Jan 1, 2022 -> offset 12345)
+// Entry 2: Timestamp=1640995260000, RelativeOffset=50   (1 min later -> offset 12395)
+// Entry 3: Timestamp=1640995320000, RelativeOffset=100  (2 min later -> offset 12445)
+```
+
+**4. Leader Epoch Checkpoint Files:**
+
+These files track leadership changes and help with log recovery:
+
+```
+Leader Epoch Entry Format:
+┌──────────────┬─────────────────┐
+│ Epoch        │ Start Offset    │
+│ 4 bytes      │ 8 bytes         │
+│ (int32)      │ (int64)         │
+└──────────────┴─────────────────┘
+```
+
+Example leader-epoch-checkpoint content:
+
+```
+# Leader epoch checkpoint file
+# Format: epoch offset
+0 0
+1 1000
+2 5000
+3 12000
+```
+
+This means:
+- Epoch 0: Started at offset 0
+- Epoch 1: Started at offset 1000 (new leader elected)
+- Epoch 2: Started at offset 5000 (another leadership change)
+- Epoch 3: Started at offset 12000 (current leader)
+
+**5. File Access Patterns in Go Implementation:**
+
+```go
+type PartitionLog struct {
+    segments    []*LogSegment
+    activeSegment *LogSegment
+    baseDir     string
+}
+
+func (p *PartitionLog) readByOffset(offset int64) (*Message, error) {
+    // 1. Find the segment containing this offset
+    segment := p.findSegment(offset)
+    if segment == nil {
+        return nil, fmt.Errorf("offset %d not found", offset)
+    }
+    
+    // 2. Use index to find physical position
+    relativeOffset := offset - segment.BaseOffset
+    position, err := segment.lookupPosition(relativeOffset)
+    if err != nil {
+        return nil, err
+    }
+    
+    // 3. Read from log file at that position
+    return segment.readAt(position)
+}
+
+func (s *LogSegment) lookupPosition(relativeOffset int64) (int64, error) {
+    // Binary search in index file
+    indexEntries := s.loadIndexEntries()
+    
+    // Find the largest index entry <= relativeOffset
+    left, right := 0, len(indexEntries)-1
+    for left <= right {
+        mid := (left + right) / 2
+        if indexEntries[mid].RelativeOffset <= relativeOffset {
+            left = mid + 1
+        } else {
+            right = mid - 1
+        }
+    }
+    
+    if right < 0 {
+        return 0, nil  // Read from beginning of segment
+    }
+    
+    return int64(indexEntries[right].Position), nil
+}
+```
+
+**6. Performance Characteristics:**
+
+- **Log files**: Sequential writes only (O(1) append), sequential reads for consumption
+- **Index files**: Binary search lookups (O(log n)), sparse indexing saves space
+- **Time index files**: Binary search by timestamp (O(log n)), enables time-based queries
+- **Memory mapping**: Kafka uses mmap() to efficiently access index files
+
+This multi-file approach enables Kafka to achieve both high write throughput (sequential log writes) and fast random access (via indexes) while maintaining data durability and consistency.
+
 **Further Reading**: For more detailed information about Kafka log performance and internals, see [Kafka Performance: Kafka Logs](https://www.redpanda.com/guides/kafka-performance-kafka-logs).
 
 ### Producers
