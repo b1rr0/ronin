@@ -143,7 +143,7 @@ Various message brokers exist, each with different trade-offs:
 
 ### CAP Theorem and Message Brokers
 
-![CAP_theorem_ .png](assets/message_queue/CAP_theorem_ .png)
+![CAP_theorem.png](assets/message_queue/CAP_theorem.png)
 
 #### How CAP Theorem Relates to Message Brokers
 
@@ -182,6 +182,133 @@ Events in systems can be stored in traditional relational databases just like ob
 **TLDR**: A log is an ordered stream of events over time. An event occurs, gets to the end of the log, and remains there unchanged.
 
 Apache Kafka manages logs and organizes a platform that connects data providers with consumers and provides the ability to receive an ordered stream of events in real time.
+
+#### How Kafka Logs Are Structured
+
+At its core, Kafka is built around the concept of logs - not application logs for debugging, but commit logs similar to those used in databases. Each log is an ordered, immutable sequence of records that is continually appended to.
+
+**Physical File Structure:**
+
+Kafka organizes data on disk in a hierarchical structure:
+
+```
+/kafka-logs/
+├── topic-name-0/          # Partition 0 of "topic-name"
+│   ├── 00000000000000000000.log    # Segment file (data)
+│   ├── 00000000000000000000.index  # Offset index
+│   ├── 00000000000000000000.timeindex # Time index
+│   ├── 00000000000000012345.log    # Next segment file
+│   ├── 00000000000000012345.index  # Next offset index
+│   └── leader-epoch-checkpoint     # Leader epoch data
+├── topic-name-1/          # Partition 1 of "topic-name"
+│   ├── 00000000000000000000.log
+│   ├── 00000000000000000000.index
+│   └── ...
+├── another-topic-0/       # Different topic, partition 0
+│   ├── 00000000000000000000.log
+│   └── ...
+└── __consumer_offsets-0/  # Internal Kafka topic for offset storage
+    ├── 00000000000000000000.log
+    └── ...
+```
+
+**Segment Files Explained:**
+
+Each partition is divided into segments. A segment is simply a file on disk containing a portion of the log. When a segment reaches a certain size (default 1GB) or age (default 7 days), it's closed and a new segment is created.
+
+- **Log files (.log)**: Contain the actual message data
+- **Index files (.index)**: Map offsets to physical positions in log files for fast lookups
+- **Time index files (.timeindex)**: Map timestamps to offsets for time-based queries
+
+**Log Segment Naming Convention:**
+
+The segment files are named with the base offset of the first message in that segment:
+- `00000000000000000000.log` - Contains messages from offset 0
+- `00000000000000012345.log` - Contains messages starting from offset 12,345
+
+**Message Storage Within Segments:**
+
+Each message in a log segment contains:
+
+```
+Message Format:
+┌─────────────┬──────────┬─────────┬──────────┬─────────┬─────────┐
+│   Offset    │   Size   │   CRC   │   Magic  │   Key   │  Value  │
+│   8 bytes   │ 4 bytes  │ 4 bytes │  1 byte  │ N bytes │ M bytes │
+└─────────────┴──────────┴─────────┴──────────┴─────────┴─────────┘
+```
+
+**Log Compaction and Retention:**
+
+Kafka can manage log data in two ways:
+
+1. **Time-based retention**: Delete segments older than a configured time (e.g., 7 days)
+2. **Size-based retention**: Delete oldest segments when total size exceeds limit
+3. **Log compaction**: Keep only the latest value for each key (for topics with keys)
+
+**How Reads and Writes Work:**
+
+**Writing (Appending):**
+- New messages are always appended to the active segment (latest .log file)
+- Write operations are sequential, making them very fast
+- Each message gets assigned the next available offset
+
+**Reading:**
+- Consumers specify an offset to start reading from
+- Kafka uses the index files to quickly locate the physical position
+- Reads can happen from any point in the log, multiple times
+
+**Log Segments in Action:**
+
+```go
+type LogSegment struct {
+    BaseOffset    int64           // First offset in this segment
+    NextOffset    int64           // Next offset to be assigned
+    LogFile       *os.File        // The .log file
+    IndexFile     *os.File        // The .index file
+    TimeIndexFile *os.File        // The .timeindex file
+    MaxSize       int64           // When to roll to new segment
+    CreatedTime   time.Time       // When this segment was created
+}
+
+// When writing a new message
+func (s *LogSegment) Append(message []byte) (offset int64, err error) {
+    offset = s.NextOffset
+    
+    // Write to log file
+    position, err := s.LogFile.Write(message)
+    if err != nil {
+        return 0, err
+    }
+    
+    // Update index (offset -> file position mapping)
+    s.IndexFile.Write(encodeIndex(offset, position))
+    
+    s.NextOffset++
+    return offset, nil
+}
+```
+
+**Benefits of This Log Structure:**
+
+1. **Sequential I/O**: All writes are appends, which are much faster than random writes
+2. **Immutability**: Once written, messages never change, simplifying concurrent access
+3. **Efficient Storage**: Index files allow fast random access without loading entire log
+4. **Scalability**: Each partition can be on different disks/servers
+5. **Fault Tolerance**: Segments can be replicated across multiple brokers
+
+**Example: Reading Messages by Offset**
+
+When a consumer requests messages starting from offset 15,000:
+
+1. Kafka looks at segment files: `00000000000000012345.log` contains this offset
+2. Uses `00000000000000012345.index` to find physical position in the log file
+3. Reads sequentially from that position
+4. Returns batch of messages to consumer
+
+This log-centric design is what makes Kafka incredibly fast and scalable, capable of handling millions of messages per second while providing strong durability guarantees.
+
+**Further Reading**: For more detailed information about Kafka log performance and internals, see [Kafka Performance: Kafka Logs](https://www.redpanda.com/guides/kafka-performance-kafka-logs).
 
 ### Producers
 
