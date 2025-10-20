@@ -350,7 +350,7 @@ type TopicConfig struct {
 ```
 
 ### Coordinator Service: Managing the Cluster
-
+![zookeeper.png](assets/message_queue/zookeeper.png)
 The coordinator acts as the brain of the Kafka cluster, managing metadata, broker orchestration, and service lifecycle. **In a traditional Kafka setup, this role is handled by Zookeeper** (or KRaft in newer versions), which maintains cluster state, broker registry, and topic metadata.
 
 For more details about Kafka-Zookeeper architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
@@ -505,7 +505,7 @@ func (c *Coordinator) assignPartitionLeaders() {
 }
 ```
 
-**Note:** In real applications, this coordination and metadata management is handled by Zookeeper (or KRaft in newer Kafka versions). For more details about this architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
+### ***Note:*** In real applications, this coordination and metadata management is handled by Zookeeper (or **KRaft** in newer Kafka versions). For more details about this architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
 
 ## Producers: Writing Messages to the System
 
@@ -979,533 +979,539 @@ type Partition struct {
 }
 ```
 
-### Topics and Partitions
+## The Log: Foundation of Event Streaming
 
-#### Topics
+**TLDR**: A log is an ordered stream of events over time. An event occurs, gets to the end of the log, and remains there unchanged.
 
-A topic is a logical division of message categories into groups. For example, events by order statuses, partner coordinates, route sheets, and so on.
+Apache Kafka manages logs and organizes a platform that connects data providers with consumers and provides the ability to receive an ordered stream of events in real time.
 
-The key word here is logical. We create topics for events of a common group and try not to mix them with each other. For example, partner coordinates should not be in the same topic as order statuses, and updated order statuses should not be stored mixed with user registration updates.
+### How Kafka Logs Are Structured
 
-It's convenient to think of a topic as a log - you write an event to the end and don't destroy the chain of old events in the process. General logic:
+At its core, Kafka is built around the concept of logs - not application logs for debugging, but commit logs similar to those used in databases. Each log is an ordered, immutable sequence of records that is continually appended to.
 
-- One producer can write to one or more topics
-- One consumer can read one or more topics
-- One or more producers can write to one topic
-- One or more consumers can read from one topic
+**Physical File Structure:**
 
-Theoretically, there are no restrictions on the number of these topics, but practically this is limited by the number of partitions.
+Kafka organizes data on disk in a hierarchical structure:
 
-#### Partitions and Segments
+```
+/kafka-logs/
+├── topic-name-0/          # Partition 0 of "topic-name"
+│   ├── 00000000000000000000.log    # Segment file (data)
+│   ├── 00000000000000000000.index  # Offset index
+│   ├── 00000000000000000000.timeindex # Time index
+│   ├── 00000000000000012345.log    # Next segment file
+│   ├── 00000000000000012345.index  # Next offset index
+│   └── leader-epoch-checkpoint     # Leader epoch data
+├── topic-name-1/          # Partition 1 of "topic-name"
+│   ├── 00000000000000000000.log
+│   ├── 00000000000000000000.index
+│   └── ...
+├── another-topic-0/       # Different topic, partition 0
+│   ├── 00000000000000000000.log
+│   └── ...
+└── __consumer_offsets-0/  # Internal Kafka topic for offset storage
+    ├── 00000000000000000000.log
+    └── ...
+```
 
-There are no restrictions on the number of topics in a Kafka cluster, but there are limitations of the computer itself. It performs operations on the processor, input-output, and eventually hits its limit. We cannot increase the power and performance of machines indefinitely, so the topic should be divided into parts.
+**Segment Files Explained:**
 
-In Kafka, these parts are called partitions. Each topic consists of one or more partitions, each of which can be placed on different brokers. Due to this, Kafka can scale: the user can create a topic, divide it into partitions, and place each of them on a separate broker.
+Each partition is divided into segments. A segment is simply a file on disk containing a portion of the log. When a segment reaches a certain size (default 1GB) or age (default 7 days), it's closed and a new segment is created.
 
-Formally, a partition is a strictly ordered log of messages. Each message in it is added to the end without the possibility of changing it in the future and somehow affecting already written messages. At the same time, the topic as a whole has no order, but the order of messages always exists in one of its partitions.
+- **Log files (.log)**: Contain the actual message data
+- **Index files (.index)**: Map offsets to physical positions in log files for fast lookups
+- **Time index files (.timeindex)**: Map timestamps to offsets for time-based queries
 
-The partitions themselves are physically represented on disks as segments. These are separate files that can be created, rotated, or deleted according to the data aging settings in them. Usually you don't have to often remember about partition segments unless you administer the cluster, but it's important to remember the data storage model in Kafka topics.
+**Log Segment Naming Convention:**
+
+The segment files are named with the base offset of the first message in that segment:
+- `00000000000000000000.log` - Contains messages from offset 0
+- `00000000000000012345.log` - Contains messages starting from offset 12,345
+
+**Message Storage Within Segments:**
+
+Each message in a log segment contains:
+
+```
+Message Format:
+┌─────────────┬──────────┬─────────┬──────────┬─────────┬─────────┐
+│   Offset    │   Size   │   CRC   │   Magic  │   Key   │  Value  │
+│   8 bytes   │ 4 bytes  │ 4 bytes │  1 byte  │ N bytes │ M bytes │
+└─────────────┴──────────┴─────────┴──────────┴─────────┴─────────┘
+```
+
+**Log Compaction and Retention:**
+
+Kafka can manage log data in two ways:
+
+1. **Time-based retention**: Delete segments older than a configured time (e.g., 7 days)
+2. **Size-based retention**: Delete oldest segments when total size exceeds limit
+3. **Log compaction**: Keep only the latest value for each key (for topics with keys)
+
+**How Reads and Writes Work:**
+
+**Writing (Appending):**
+- New messages are always appended to the active segment (latest .log file)
+- Write operations are sequential, making them very fast
+- Each message gets assigned the next available offset
+
+**Reading:**
+- Consumers specify an offset to start reading from
+- Kafka uses the index files to quickly locate the physical position
+- Reads can happen from any point in the log, multiple times
+
+**Log Segments in Action:**
 
 ```go
-// Segment represents a physical file storing messages
 type LogSegment struct {
-    BaseOffset   int64     `json:"base_offset"`
-    File         *os.File  `json:"-"`
-    Size         int64     `json:"size"`
-    MaxSize      int64     `json:"max_size"`
-    CreatedAt    time.Time `json:"created_at"`
-    MessageCount int       `json:"message_count"`
-    IsActive     bool      `json:"is_active"`
+    BaseOffset    int64           // First offset in this segment
+    NextOffset    int64           // Next offset to be assigned
+    LogFile       *os.File        // The .log file
+    IndexFile     *os.File        // The .index file
+    TimeIndexFile *os.File        // The .timeindex file
+    MaxSize       int64           // When to roll to new segment
+    CreatedTime   time.Time       // When this segment was created
 }
 
-// Partition contains multiple segments
-type Partition struct {
-    ID            int32          `json:"id"`
-    Topic         string         `json:"topic"`
-    Segments      []*LogSegment  `json:"segments"`
-    ActiveSegment *LogSegment    `json:"active_segment"`
-    HighWaterMark int64          `json:"high_water_mark"`
-    LogStartOffset int64         `json:"log_start_offset"`
-    Leader        BrokerID       `json:"leader"`
-    Replicas      []BrokerID     `json:"replicas"`
-    ISR           []BrokerID     `json:"isr"`
-}
-```
-
-### Data Flow as a Log
-
-A segment is also convenient to think of as a regular log file: each next entry is added to the end of the file and does not change previous entries. This is actually a FIFO (First-In-First-Out) queue and Kafka implements exactly this model.
-
-Semantically and physically, messages inside a segment cannot be deleted, they are immutable. All we can do is specify how long the Kafka broker will store events through the Retention Policy setting.
-
-The numbers inside the segment are real system messages that have sequence numbers or offsets that increase monotonically over time. Each partition has its own counter, and it doesn't intersect with other partitions in any way - positions 0, 1, 2, 3, and so on are separate for each partition. Thus, producers write messages to partitions, and the broker addresses each of these messages with its sequence number.
-
-In addition to producers that write messages, there are consumers that read them. A log can have multiple consumers that read it from different positions and don't interfere with each other. And consumers don't have a hard binding to reading events by time. If desired, they can read after days, weeks, months, or even several times after some time.
-
-The starting position of the first message in the log is called log-start offset. The position of the message written last is log-end offset. The consumer's position now is current offset.
-
-The distance between the end offset and the consumer's current offset is called lag - this is the first thing to monitor in your applications. The acceptable lag for each application is different; this is closely related to business logic and system operation requirements.
-
-### Message Structure
-
-Now it's time to look at what an individual Kafka message consists of. If simplified, the message structure is represented by optional headers. They can be added from the producer side, partitioning key, payload, and timestamp.
-
-Each event is a key-value pair. The partitioning key can be anything: numeric, string, object, or completely empty. The value can also be anything - a number, string, or object in your domain that you can somehow serialize (JSON, Protobuf, ...) and store.
-
-In the message, the producer can specify the time, or the broker will do this for it at the moment of message reception. Headers look like in the HTTP protocol - these are string key-value pairs. You shouldn't store the data itself in them, but they can be used to transmit metadata. For example, for tracing, MIME-type messages, digital signatures, etc.
-
-```go
-// Complete message structure with metadata
-type KafkaMessage struct {
-    // Core data
-    Key       []byte            `json:"key"`
-    Value     []byte            `json:"value"`
+// When writing a new message
+func (s *LogSegment) Append(message []byte) (offset int64, err error) {
+    offset = s.NextOffset
     
-    // Metadata
-    Headers   map[string]string `json:"headers"`
-    Timestamp int64             `json:"timestamp"`
-    
-    // Kafka internals
-    Topic     string            `json:"topic"`
-    Partition int32             `json:"partition"`
-    Offset    int64             `json:"offset"`
-    
-    // Additional metadata
-    ProducerID     int64         `json:"producer_id"`
-    SequenceNumber int32         `json:"sequence_number"`
-    Checksum       uint32        `json:"checksum"`
-}
-
-func (m *KafkaMessage) Serialize() ([]byte, error) {
-    // Message serialization logic
-    buffer := &bytes.Buffer{}
-    
-    // Write magic byte and version
-    buffer.WriteByte(0x02) // Magic byte for message format v2
-    buffer.WriteByte(0x01) // Version
-    
-    // Write timestamp
-    binary.Write(buffer, binary.BigEndian, m.Timestamp)
-    
-    // Write key length and key
-    binary.Write(buffer, binary.BigEndian, int32(len(m.Key)))
-    buffer.Write(m.Key)
-    
-    // Write value length and value
-    binary.Write(buffer, binary.BigEndian, int32(len(m.Value)))
-    buffer.Write(m.Value)
-    
-    // Write headers
-    binary.Write(buffer, binary.BigEndian, int32(len(m.Headers)))
-    for k, v := range m.Headers {
-        binary.Write(buffer, binary.BigEndian, int32(len(k)))
-        buffer.WriteString(k)
-        binary.Write(buffer, binary.BigEndian, int32(len(v)))
-        buffer.WriteString(v)
-    }
-    
-    return buffer.Bytes(), nil
-}
-```
-
-### Producer Service
-
-The producer is responsible for publishing messages to topics with intelligent partitioning and batching:
-
-```go
-type Producer struct {
-    clientID     string
-    brokers      []string
-    partitioner  Partitioner
-    batcher      *MessageBatcher
-    serializer   Serializer
-    ackLevel     AckLevel
-    retryConfig  RetryConfig
-    metrics      *ProducerMetrics
-}
-
-type ProducerConfig struct {
-    Brokers         []string      `yaml:"brokers"`
-    ClientID        string        `yaml:"client_id"`
-    BatchSize       int           `yaml:"batch_size"`
-    LingerMs        int           `yaml:"linger_ms"`
-    Retries         int           `yaml:"retries"`
-    AckLevel        AckLevel      `yaml:"ack_level"`
-    Compression     CompressionType `yaml:"compression"`
-    RequestTimeout  time.Duration `yaml:"request_timeout"`
-}
-
-// Send publishes a message to a topic
-func (p *Producer) Send(topic string, message *Message) error {
-    message.Topic = topic
-    message.Timestamp = time.Now().UnixNano()
-    
-    // Choose partition
-    partition := p.partitioner.ChoosePartition(message.Key, len(p.getTopicMetadata(topic).Partitions))
-    message.Partition = int32(partition)
-    
-    // Add to batch
-    if p.batcher.Add(message) {
-        return p.flushBatch()
-    }
-    
-    return nil
-}
-
-// Partitioning strategies
-type Partitioner interface {
-    ChoosePartition(key []byte, numPartitions int) int
-}
-
-type HashPartitioner struct{}
-
-func (h *HashPartitioner) ChoosePartition(key []byte, numPartitions int) int {
-    if len(key) == 0 {
-        return rand.Intn(numPartitions)
-    }
-    hash := crc32.ChecksumIEEE(key)
-    return int(hash) % numPartitions
-}
-
-// How Kafka Producer Chooses Partitions
-func (p *Producer) selectPartition(message *Message, topic *TopicMetadata) int32 {
-    numPartitions := len(topic.Partitions)
-    
-    // If producer specifies partition directly
-    if message.Partition >= 0 && message.Partition < int32(numPartitions) {
-        return message.Partition
-    }
-    
-    // Use partitioner strategy
-    partition := p.partitioner.ChoosePartition(message.Key, numPartitions)
-    
-    // Ensure partition is valid
-    return int32(partition % numPartitions)
-}
-
-// Balancing and Partitioning Strategies
-// The producer program can specify a key for the message and determine 
-// the partition number by dividing the computed hash by the number of partitions.
-// This way, messages with the same identifier are saved to the same partition.
-// This common partitioning strategy allows achieving strict ordering of events 
-// when reading by saving messages to one partition instead of different ones.
-
-// For example, the key could be a card number when setting and resetting 
-// a dynamic limit. In this case, we guarantee that events for one card 
-// will follow strictly in the order they were written to the partition.
-
-type CardPartitioner struct{}
-
-func (cp *CardPartitioner) ChoosePartition(key []byte, numPartitions int) int {
-    if len(key) == 0 {
-        return 0 // Default partition for messages without keys
-    }
-    
-    cardNumber := string(key)
-    hash := fnv.New32a()
-    hash.Write([]byte(cardNumber))
-    
-    return int(hash.Sum32()) % numPartitions
-}
-
-type RoundRobinPartitioner struct {
-    counter int64
-}
-
-func (rr *RoundRobinPartitioner) ChoosePartition(key []byte, numPartitions int) int {
-    partition := atomic.AddInt64(&rr.counter, 1) % int64(numPartitions)
-    return int(partition)
-}
-
-type KeyBasedPartitioner struct{}
-
-func (k *KeyBasedPartitioner) ChoosePartition(key []byte, numPartitions int) int {
-    if len(key) == 0 {
-        return 0 // Default partition for messages without keys
-    }
-    
-    hash := fnv.New32a()
-    hash.Write(key)
-    return int(hash.Sum32()) % numPartitions
-}
-```
-
-### Message Batching System
-
-Batching is crucial for performance, grouping multiple messages together:
-
-```go
-type MessageBatcher struct {
-    messages    []Message
-    maxSize     int
-    maxWait     time.Duration
-    lastFlush   time.Time
-    mutex       sync.RWMutex
-    flushChan   chan struct{}
-}
-
-func NewMessageBatcher(maxSize int, maxWait time.Duration) *MessageBatcher {
-    batcher := &MessageBatcher{
-        messages:  make([]Message, 0, maxSize),
-        maxSize:   maxSize,
-        maxWait:   maxWait,
-        lastFlush: time.Now(),
-        flushChan: make(chan struct{}, 1),
-    }
-    
-    // Start flush timer
-    go batcher.flushTimer()
-    return batcher
-}
-
-func (b *MessageBatcher) Add(msg Message) bool {
-    b.mutex.Lock()
-    defer b.mutex.Unlock()
-    
-    b.messages = append(b.messages, msg)
-    
-    // Check if we should flush
-    shouldFlush := len(b.messages) >= b.maxSize || 
-                  time.Since(b.lastFlush) > b.maxWait
-    
-    if shouldFlush {
-        select {
-        case b.flushChan <- struct{}{}:
-        default:
-        }
-        return true
-    }
-    
-    return false
-}
-
-### Producer Design
-
-A typical producer program works like this: the payload is packaged into a structure indicating the topic, partition, and partitioning key. Next, the payload is serialized into a suitable format - JSON, Protobuf, Avro, or your own format with schema support. Then the message is assigned a partition according to the transmitted key and selected algorithm. After that, it is grouped into batches of selected sizes and sent to the Kafka broker for storage.
-
-Depending on the settings, the producer waits for the write to complete in the Kafka cluster and a response acknowledgment message. If the producer could not write the message, it can try to send the message again - and so on in a circle.
-
-Each parameter in the chain can be individually configured by each producer. For example, you can choose a partitioning algorithm, determine batch size, operating the balance between latency and throughput, and also choose message delivery semantics.
-
-```go
-// Typical producer workflow
-func (p *Producer) SendMessage(topic string, key, value []byte, headers map[string]string) error {
-    // 1. Create message structure
-    message := &Message{
-        Key:       key,
-        Value:     value,
-        Headers:   headers,
-        Timestamp: time.Now().UnixNano(),
-        Topic:     topic,
-    }
-    
-    // 2. Serialize message
-    serializedData, err := p.serializer.Serialize(message)
+    // Write to log file
+    position, err := s.LogFile.Write(message)
     if err != nil {
-        return fmt.Errorf("serialization failed: %w", err)
-    }
-    message.Value = serializedData
-    
-    // 3. Choose partition
-    topicMetadata := p.getTopicMetadata(topic)
-    partition := p.selectPartition(message, topicMetadata)
-    message.Partition = partition
-    
-    // 4. Add to batch
-    if p.batcher.Add(*message) {
-        // Batch is ready, send it
-        return p.flushBatch()
+        return 0, err
     }
     
-    return nil
-}
-
-func (p *Producer) flushBatch() error {
-    batch := p.batcher.Flush()
-    if len(batch) == 0 {
-        return nil
-    }
+    // Update index (offset -> file position mapping)
+    s.IndexFile.Write(encodeIndex(offset, position))
     
-    // Group messages by partition
-    partitionBatches := make(map[int32][]Message)
-    for _, msg := range batch {
-        partitionBatches[msg.Partition] = append(partitionBatches[msg.Partition], msg)
-    }
-    
-    // Send to brokers
-    var wg sync.WaitGroup
-    for partition, messages := range partitionBatches {
-        wg.Add(1)
-        go func(p int32, msgs []Message) {
-            defer wg.Done()
-            err := p.sendToPartition(p, msgs)
-            if err != nil {
-                log.Printf("Failed to send batch to partition %d: %v", p, err)
-                // Implement retry logic here
-            }
-        }(partition, messages)
-    }
-    
-    wg.Wait()
-    return nil
+    s.NextOffset++
+    return offset, nil
 }
 ```
 
-### Delivery Semantics
+**Benefits of This Log Structure:**
 
-In any queues, there is a choice between delivery speed and reliability costs. The colored squares in the diagram are messages that we will write to the queue, choosing the necessary semantics.
+1. **Sequential I/O**: All writes are appends, which are much faster than random writes
+2. **Immutability**: Once written, messages never change, simplifying concurrent access
+3. **Efficient Storage**: Index files allow fast random access without loading entire log
+4. **Scalability**: Each partition can be on different disks/servers
+5. **Fault Tolerance**: Segments can be replicated across multiple brokers
 
-```go
-type DeliverySemantics int
+**Example: Reading Messages by Offset**
 
-const (
-    AtMostOnce DeliverySemantics = iota  // May lose messages, no duplicates
-    AtLeastOnce                          // No message loss, possible duplicates  
-    ExactlyOnce                          // No loss, no duplicates (expensive)
-)
+When a consumer requests messages starting from offset 15,000:
 
-type AckLevel int
+1. Kafka looks at segment files: `00000000000000012345.log` contains this offset
+2. Uses `00000000000000012345.index` to find physical position in the log file
+3. Reads sequentially from that position
+4. Returns batch of messages to consumer
 
-const (
-    NoAck     AckLevel = 0  // Fire and forget
-    LeaderAck AckLevel = 1  // Wait for leader acknowledgment
-    AllAck    AckLevel = -1 // Wait for all in-sync replicas
-)
+This log-centric design is what makes Kafka incredibly fast and scalable, capable of handling millions of messages per second while providing strong durability guarantees.
+
+### Internal File Structure Details
+
+Now let's dive deeper into how each file type stores data internally:
+
+#### 1. Log Files (.log) - Message Data Storage
+
+The .log files contain the actual message data in a binary format. Each message is stored with the following structure:
+
+```
+Message Record Format:
+┌─────────────┬──────────────┬─────────────┬──────────────┬─────────────┬─────────────┐
+│   Offset    │  Message     │   CRC32     │  Magic Byte  │  Attributes │  Timestamp  │
+│   8 bytes   │  Size        │   4 bytes   │   1 byte     │   1 byte    │   8 bytes   │
+│   (int64)   │  4 bytes     │             │              │             │             │
+└─────────────┼──────────────┼─────────────┼──────────────┼─────────────┼─────────────┤
+│  Key Length │  Key Data    │ Value Length│  Value Data  │   Headers   │             │
+│   4 bytes   │  N bytes     │   4 bytes   │   M bytes    │  Variable   │             │
+│   (int32)   │              │   (int32)   │              │             │             │
+└─────────────┴──────────────┴─────────────┴──────────────┴─────────────┴─────────────┘
 ```
 
-**At-most once semantics** means that when delivering messages, we are okay with message losses, but not their duplicates. This is the weakest guarantee implemented by queue brokers.
-
-**At-least once semantics** means that we don't want to lose messages, but we are okay with possible duplicates.
-
-**Exactly-once semantics** means that we want to deliver one and only one message, losing nothing and duplicating nothing.
-
-At first glance, exactly-once semantics seems the most correct for any application, but this is not always the case. For example, when transmitting partner coordinates, it's not at all necessary to save every point from them, and at-most once is quite enough. And when processing idempotent events, we may well be satisfied with a duplicate if the status model assumes its correct processing.
-
-In distributed systems, exactly-once has its price: high reliability means high latency. Let's look at what tools Kafka offers for implementing all three message delivery semantics to the broker.
-
-### Reliability of Delivery
-
-From the producer side, the developer determines the reliability of message delivery to Kafka using the acks parameter. By specifying 0 or none, the producer will send messages to Kafka without waiting for any write confirmations to disk from the broker side.
-
-This is the weakest guarantee. In case of broker failure or network problems, you will never know if the message got into the log or was simply lost.
+**Log File Components:**
+- **Offset**: Unique monotonic identifier for the message within partition
+- **Message Size**: Total size of the message record in bytes
+- **CRC32**: Checksum for data integrity verification
+- **Magic Byte**: Protocol version identifier (v0, v1, v2)
+- **Attributes**: Compression type, timestamp type flags
+- **Timestamp**: Message timestamp (producer or broker time)
+- **Key/Value**: Actual message payload
 
 ```go
-func (p *Producer) sendWithAcks(messages []Message, ackLevel AckLevel) error {
-    switch ackLevel {
-    case NoAck:
-        // Fire and forget - fastest but least reliable
-        return p.sendAsync(messages)
+type LogFileEntry struct {
+    Offset      int64             // 8 bytes
+    MessageSize uint32            // 4 bytes
+    CRC32       uint32            // 4 bytes
+    Magic       byte              // 1 byte
+    Attributes  byte              // 1 byte
+    Timestamp   int64             // 8 bytes
+    KeyLength   int32             // 4 bytes
+    Key         []byte            // Variable
+    ValueLength int32             // 4 bytes
+    Value       []byte            // Variable
+    Headers     []MessageHeader   // Variable
+}
+
+func (l *LogFile) writeMessage(msg *Message) (int64, error) {
+    // Calculate total message size
+    messageSize := 26 + len(msg.Key) + len(msg.Value) // Fixed headers + payload
+    
+    // Write message to log file
+    buffer := make([]byte, 0, messageSize+12) // +12 for offset and size headers
+    
+    // Write offset and message size
+    binary.BigEndian.PutUint64(buffer[0:8], uint64(msg.Offset))
+    binary.BigEndian.PutUint32(buffer[8:12], uint32(messageSize))
+    
+    // Write message data
+    pos := 12
+    binary.BigEndian.PutUint32(buffer[pos:pos+4], msg.CRC32)
+    buffer[pos+4] = msg.Magic
+    buffer[pos+5] = msg.Attributes
+    binary.BigEndian.PutUint64(buffer[pos+6:pos+14], uint64(msg.Timestamp))
+    
+    // Write key and value
+    binary.BigEndian.PutUint32(buffer[pos+14:pos+18], int32(len(msg.Key)))
+    copy(buffer[pos+18:], msg.Key)
+    binary.BigEndian.PutUint32(buffer[pos+18+len(msg.Key):], int32(len(msg.Value)))
+    copy(buffer[pos+22+len(msg.Key):], msg.Value)
+    
+    return l.file.Write(buffer)
+}
+```
+
+#### 2. Index Files (.index) - Offset to Position Mapping
+
+Index files provide fast lookup from logical offsets to physical byte positions in the log file. They use a compact binary format:
+
+```
+Index Entry Format (8 bytes each):
+┌──────────────┬─────────────────┐
+│ Relative     │ Physical        │
+│ Offset       │ Position        │
+│ 4 bytes      │ 4 bytes         │
+│ (int32)      │ (int32)         │
+└──────────────┴─────────────────┘
+```
+
+**Index File Details:**
+- **Sparse indexing**: Not every message has an index entry (default: every 4KB of log data)
+- **Relative offsets**: Stored relative to segment base offset to save space
+- **Sorted order**: Entries are always sorted by offset for binary search
+- **Fixed size**: Each entry is exactly 8 bytes
+
+```go
+type IndexEntry struct {
+    RelativeOffset uint32  // Offset relative to segment base offset
+    Position       uint32  // Byte position in .log file
+}
+
+type IndexFile struct {
+    file        *os.File
+    mmap        []byte     // Memory-mapped file for fast access
+    entries     []IndexEntry
+    baseOffset  int64      // Base offset of the segment
+    maxEntries  int        // Maximum number of entries
+}
+
+func (idx *IndexFile) lookup(targetOffset int64) (uint32, error) {
+    relativeOffset := uint32(targetOffset - idx.baseOffset)
+    
+    // Binary search through memory-mapped entries
+    left, right := 0, len(idx.entries)-1
+    
+    for left <= right {
+        mid := (left + right) / 2
+        entry := idx.entries[mid]
         
-    case LeaderAck:
-        // Wait for leader acknowledgment - balanced approach
-        return p.sendSyncToLeader(messages)
-        
-    case AllAck:
-        // Wait for all ISR replicas - strongest guarantee
-        return p.sendSyncToAll(messages)
-    }
-    return nil
-}
-```
-
-By specifying the setting to 1 or leader, the producer when writing will wait for a response from the broker with the leader partition - this means the message is saved to disk of one broker. In this case, you get a guarantee that the message was received at least once, but this still doesn't protect you from problems in the cluster itself.
-
-Imagine that at the moment of confirmation, the broker with the leader partition fails, and the followers didn't have time to replicate data from it. In this case, you lose the message and again don't know about it. Such situations happen rarely, but they are possible.
-
-Finally, by setting acks to -1 or all, you ask the broker with the leader partition to send you confirmation only when the write gets to the local disk of the broker and to follower replicas. The number of these replicas is set by the min.insync.replicas setting.
-
-A common mistake when configuring a topic is choosing min.insync.replicas by the number of replicas. In such a scenario, in case of broker failure and loss of one replica, the producer will no longer be able to write a message to the cluster, since it won't wait for confirmation. It's better to prudently set min.insync.replicas to one less than the number of replicas.
-
-Obviously, the third scheme is quite reliable, but it requires more overhead: not only do you need to save to disk, but you also need to wait for followers to replicate messages and save them to their disk log.
-
-### Idempotent Producers
-
-Even with choosing acks=all, message duplicates are possible. In normal operation, the producer sends a message to the broker, and the broker saves the data in the log on disk and sends confirmation to the producer. The producer again forms a batch of messages and so on. But no program is protected from failures.
-
-What if the broker couldn't send confirmation to the producer due to network problems? In this case, the producer resends the message to the broker. The broker obediently saves and adds another message to the log - a duplicate appears.
-
-This problem is solved in Kafka thanks to the transactional API and the use of idempotency. The broker has a special option that enables idempotency - enable.idempotence. So each message will be assigned a producer identifier or PID and a monotonically increasing sequence number. Due to this, duplicate messages from one producer with the same PID will be discarded on the broker side.
-
-To put it simply - when you use acks=all, there are no reasons not to enable enable.idempotence for your producers. This way you will achieve exactly-once guarantee when writing to the broker and avoid duplicates. But this power has its price - writing will take longer.
-
-```go
-type IdempotentProducer struct {
-    ProducerID     int64
-    SequenceNumber int32
-    config         ProducerConfig
-    transactionMgr *TransactionManager
-}
-
-func (ip *IdempotentProducer) Send(message *Message) error {
-    // Assign producer ID and sequence number for idempotency
-    message.ProducerID = ip.ProducerID
-    message.SequenceNumber = atomic.AddInt32(&ip.SequenceNumber, 1)
-    
-    // Calculate checksum for duplicate detection
-    message.Checksum = ip.calculateChecksum(message)
-    
-    return ip.sendWithTransaction(message)
-}
-
-func (ip *IdempotentProducer) calculateChecksum(msg *Message) uint32 {
-    hasher := crc32.NewIEEE()
-    hasher.Write(msg.Key)
-    hasher.Write(msg.Value)
-    binary.Write(hasher, binary.BigEndian, msg.ProducerID)
-    binary.Write(hasher, binary.BigEndian, msg.SequenceNumber)
-    return hasher.Sum32()
-}
-
-type TransactionManager struct {
-    transactionID string
-    state         TransactionState
-    coordinator   *TransactionCoordinator
-}
-
-type TransactionState int
-
-const (
-    TransactionBegin TransactionState = iota
-    TransactionInProgress
-    TransactionPrepareCommit
-    TransactionCompleted
-    TransactionAborted
-)
-```
-
-func (b *MessageBatcher) flushTimer() {
-ticker := time.NewTicker(b.maxWait / 2)
-defer ticker.Stop()
-
-    for {
-        select {
-        case <-ticker.C:
-            b.checkTimeBasedFlush()
-        case <-b.flushChan:
-            // Batch is ready to flush
-            return
+        if entry.RelativeOffset == relativeOffset {
+            return entry.Position, nil
+        } else if entry.RelativeOffset < relativeOffset {
+            left = mid + 1
+        } else {
+            right = mid - 1
         }
     }
-}
-
-func (b *MessageBatcher) Flush() []Message {
-b.mutex.Lock()
-defer b.mutex.Unlock()
-
-    if len(b.messages) == 0 {
-        return nil
+    
+    // Return largest entry <= targetOffset
+    if right >= 0 {
+        return idx.entries[right].Position, nil
     }
     
-    batch := make([]Message, len(b.messages))
-    copy(batch, b.messages)
+    return 0, nil // Read from beginning
+}
+
+func (idx *IndexFile) append(offset int64, position uint32) error {
+    relativeOffset := uint32(offset - idx.baseOffset)
     
-    // Reset batch
-    b.messages = b.messages[:0]
-    b.lastFlush = time.Now()
+    entry := IndexEntry{
+        RelativeOffset: relativeOffset,
+        Position:       position,
+    }
     
-    return batch
+    // Write directly to memory-mapped file
+    entryIndex := len(idx.entries)
+    if entryIndex >= idx.maxEntries {
+        return fmt.Errorf("index file full")
+    }
+    
+    entryPos := entryIndex * 8
+    binary.BigEndian.PutUint32(idx.mmap[entryPos:entryPos+4], relativeOffset)
+    binary.BigEndian.PutUint32(idx.mmap[entryPos+4:entryPos+8], position)
+    
+    idx.entries = append(idx.entries, entry)
+    return nil
 }
 ```
+
+#### 3. Time Index Files (.timeindex) - Timestamp to Offset Mapping
+
+Time index files enable time-based queries by mapping timestamps to offsets:
+
+```
+Time Index Entry Format (12 bytes each):
+┌──────────────┬──────────────┬─────────────────┐
+│ Timestamp    │ Relative     │ (Padding)       │
+│ 8 bytes      │ Offset       │ 0 bytes         │
+│ (int64)      │ 4 bytes      │                 │
+│              │ (int32)      │                 │
+└──────────────┴──────────────┴─────────────────┘
+```
+
+**Time Index Details:**
+- **Timestamp precision**: Milliseconds since Unix epoch
+- **Sparse entries**: Not every message, typically every segment boundary
+- **Monotonic timestamps**: Entries must be in chronological order
+- **Time-based queries**: Enable "read from timestamp X" operations
+
+```go
+type TimeIndexEntry struct {
+    Timestamp      int64   // Unix timestamp in milliseconds
+    RelativeOffset uint32  // Offset relative to segment base offset
+}
+
+type TimeIndex struct {
+    file        *os.File
+    mmap        []byte
+    entries     []TimeIndexEntry
+    baseOffset  int64
+}
+
+func (ti *TimeIndex) lookupByTimestamp(timestamp int64) (int64, error) {
+    // Binary search for largest timestamp <= target
+    left, right := 0, len(ti.entries)-1
+    resultOffset := ti.baseOffset
+    
+    for left <= right {
+        mid := (left + right) / 2
+        entry := ti.entries[mid]
+        
+        if entry.Timestamp <= timestamp {
+            resultOffset = ti.baseOffset + int64(entry.RelativeOffset)
+            left = mid + 1
+        } else {
+            right = mid - 1
+        }
+    }
+    
+    return resultOffset, nil
+}
+
+func (ti *TimeIndex) append(timestamp int64, offset int64) error {
+    relativeOffset := uint32(offset - ti.baseOffset)
+    
+    entry := TimeIndexEntry{
+        Timestamp:      timestamp,
+        RelativeOffset: relativeOffset,
+    }
+    
+    // Ensure monotonic timestamps
+    if len(ti.entries) > 0 {
+        lastEntry := ti.entries[len(ti.entries)-1]
+        if timestamp < lastEntry.Timestamp {
+            return fmt.Errorf("timestamp %d is before last timestamp %d", 
+                timestamp, lastEntry.Timestamp)
+        }
+    }
+    
+    // Write to memory-mapped file
+    entryIndex := len(ti.entries)
+    entryPos := entryIndex * 12
+    
+    binary.BigEndian.PutUint64(ti.mmap[entryPos:entryPos+8], uint64(timestamp))
+    binary.BigEndian.PutUint32(ti.mmap[entryPos+8:entryPos+12], relativeOffset)
+    
+    ti.entries = append(ti.entries, entry)
+    return nil
+}
+```
+
+### Message Write Flow: From Producer to Log
+
+Here's the complete flow of how a message travels from producer to being stored in log files:
+
+```go
+// Complete message write flow
+func (broker *Broker) handleProduceRequest(req *ProduceRequest) error {
+    for _, batch := range req.MessageBatches {
+        // Step 1: Validate and assign offsets
+        partition := broker.getPartition(batch.Topic, batch.Partition)
+        if partition == nil {
+            return fmt.Errorf("partition not found")
+        }
+        
+        // Step 2: Assign consecutive offsets
+        startOffset := partition.nextOffset
+        for i, msg := range batch.Messages {
+            msg.Offset = startOffset + int64(i)
+            msg.Timestamp = time.Now().UnixMilli()
+        }
+        
+        // Step 3: Write to active log segment
+        err := broker.writeToLog(partition, batch.Messages)
+        if err != nil {
+            return fmt.Errorf("failed to write to log: %w", err)
+        }
+        
+        // Step 4: Update indexes
+        err = broker.updateIndexes(partition, batch.Messages)
+        if err != nil {
+            return fmt.Errorf("failed to update indexes: %w", err)
+        }
+        
+        // Step 5: Update high water mark
+        partition.highWaterMark = batch.Messages[len(batch.Messages)-1].Offset + 1
+        
+        // Step 6: Trigger replication (if leader)
+        if partition.isLeader {
+            go broker.replicateToFollowers(partition, batch.Messages)
+        }
+        
+        // Step 7: Send acknowledgment back to producer
+        go broker.sendProduceResponse(req.ClientID, batch.Messages)
+    }
+    
+    return nil
+}
+
+func (broker *Broker) writeToLog(partition *Partition, messages []*Message) error {
+    activeSegment := partition.activeSegment
+    
+    // Check if we need to roll to new segment
+    if activeSegment.shouldRoll() {
+        newSegment, err := partition.rollNewSegment()
+        if err != nil {
+            return err
+        }
+        activeSegment = newSegment
+    }
+    
+    // Write each message to log file
+    for _, msg := range messages {
+        // Step 1: Serialize message
+        data, err := msg.serialize()
+        if err != nil {
+            return err
+        }
+        
+        // Step 2: Calculate CRC32 for integrity
+        msg.CRC32 = crc32.ChecksumIEEE(data)
+        
+        // Step 3: Write to log file
+        position, err := activeSegment.logFile.writeMessage(msg)
+        if err != nil {
+            return err
+        }
+        
+        // Step 4: Update segment metadata
+        activeSegment.size += int64(len(data))
+        activeSegment.messageCount++
+        activeSegment.lastOffset = msg.Offset
+        
+        log.Printf("Written message offset=%d, size=%d bytes, position=%d", 
+            msg.Offset, len(data), position)
+    }
+    
+    return nil
+}
+
+func (broker *Broker) updateIndexes(partition *Partition, messages []*Message) error {
+    activeSegment := partition.activeSegment
+    
+    for _, msg := range messages {
+        // Update offset index (sparse - every 4KB or configurable interval)
+        if broker.shouldCreateIndexEntry(activeSegment, msg) {
+            err := activeSegment.offsetIndex.append(msg.Offset, msg.Position)
+            if err != nil {
+                return fmt.Errorf("failed to update offset index: %w", err)
+            }
+        }
+        
+        // Update time index (even more sparse - every segment or time interval)
+        if broker.shouldCreateTimeIndexEntry(activeSegment, msg) {
+            err := activeSegment.timeIndex.append(msg.Timestamp, msg.Offset)
+            if err != nil {
+                return fmt.Errorf("failed to update time index: %w", err)
+            }
+        }
+    }
+    
+    return nil
+}
+
+func (broker *Broker) shouldCreateIndexEntry(segment *LogSegment, msg *Message) bool {
+    // Create index entry every 4KB of log data (configurable)
+    return (segment.size - segment.lastIndexedPosition) >= 4096
+}
+
+func (broker *Broker) shouldCreateTimeIndexEntry(segment *LogSegment, msg *Message) bool {
+    // Create time index entry every 10 minutes or 1MB (configurable)
+    timeDiff := msg.Timestamp - segment.lastIndexedTimestamp
+    sizeDiff := segment.size - segment.lastTimeIndexedPosition
+    
+    return timeDiff >= 600000 || sizeDiff >= 1048576 // 10 minutes or 1MB
+}
+
+// Complete write flow example
+func ExampleMessageWriteFlow() {
+    // Producer sends batch of messages
+    messages := []*Message{
+        {Key: []byte("user-123"), Value: []byte(`{"action": "login"}`)},
+        {Key: []byte("user-456"), Value: []byte(`{"action": "logout"}`)},
+        {Key: []byte("user-789"), Value: []byte(`{"action": "purchase"}`)},
+    }
+    
+    // Broker processes the batch
+    for _, msg := range messages {
+        log.Printf("Processing message: key=%s", string(msg.Key))
+        
+        // 1. Assign offset: 15000, 15001, 15002
+        // 2. Write to log: append to 00000000000000012345.log
+        // 3. Update index: add entry to 00000000000000012345.index
+        // 4. Update time index: maybe add to 00000000000000012345.timeindex
+        // 5. Sync to followers: replicate to other brokers
+        // 6. Send ack: confirm write to producer
+    }
+    
+    // Result: 3 messages persisted durably to disk with indexes for fast retrieval
+}
+```
+
+**Write Flow Summary:**
+1. **Message Reception**: Broker receives batch from producer
+2. **Offset Assignment**: Each message gets unique, monotonic offset
+3. **Log Writing**: Messages appended to active segment's .log file
+4. **Index Updates**: Sparse entries added to .index and .timeindex files
+5. **Metadata Update**: Partition high water mark advanced
+6. **Replication**: Data copied to follower replicas (if leader)
+7. **Acknowledgment**: Success response sent back to producer
+
+This flow ensures durability, ordering, and efficient retrieval while maintaining high write throughput.
+
+**Further Reading**: For more detailed information about Kafka log performance and internals, see [Kafka Performance: Kafka Logs](https://www.redpanda.com/guides/kafka-performance-kafka-logs).
 
 ### Consumer Service
 
@@ -2039,550 +2045,3 @@ func (pl *PartitionLog) Fetch(startOffset int64, maxBytes int) ([]Message, error
     return messages, nil
 }
 ```
-
-### Replication System
-
-Replication ensures data durability and availability:
-
-```go
-type ReplicationManager struct {
-    brokerID         BrokerID
-    leaderPartitions map[PartitionKey]*LeaderReplica
-    followerPartitions map[PartitionKey]*FollowerReplica
-    coordinator      *ClusterCoordinator
-    fetcherPool      *FetcherPool
-    mutex           sync.RWMutex
-}
-
-type LeaderReplica struct {
-    Partition    *PartitionLog
-    Followers    map[BrokerID]*FollowerState
-    ISR          []BrokerID  // In-Sync Replicas
-    HW           int64       // High Water Mark
-    LEO          int64       // Log End Offset
-}
-
-type FollowerState struct {
-    BrokerID     BrokerID
-    LastFetchOffset int64
-    LastCaughtUpTime time.Time
-    InSync       bool
-}
-
-type FollowerReplica struct {
-    Partition    *PartitionLog
-    LeaderBroker BrokerID
-    FetchOffset  int64
-    LastSync     time.Time
-}
-
-// Replicate handles replication for leader partitions
-func (rm *ReplicationManager) Replicate(key PartitionKey, messages []Message) error {
-    rm.mutex.RLock()
-    leader, isLeader := rm.leaderPartitions[key]
-    rm.mutex.RUnlock()
-    
-    if !isLeader {
-        return fmt.Errorf("not leader for partition %s-%d", key.Topic, key.Partition)
-    }
-    
-    // Append to local log first
-    offsets, err := leader.Partition.Append(messages)
-    if err != nil {
-        return err
-    }
-    
-    leader.LEO = offsets[len(offsets)-1] + 1
-    
-    // Update high water mark based on ISR
-    rm.updateHighWaterMark(leader)
-    
-    // Replicate to followers asynchronously
-    go rm.replicateToFollowers(key, leader, messages)
-    
-    return nil
-}
-
-func (rm *ReplicationManager) replicateToFollowers(key PartitionKey, leader *LeaderReplica, messages []Message) {
-    var wg sync.WaitGroup
-    
-    for followerID := range leader.Followers {
-        wg.Add(1)
-        go func(brokerID BrokerID) {
-            defer wg.Done()
-            
-            err := rm.sendToFollower(brokerID, key, messages)
-            if err != nil {
-                log.Printf("Failed to replicate to broker %d: %v", brokerID, err)
-                rm.markFollowerOutOfSync(leader, brokerID)
-            } else {
-                rm.updateFollowerState(leader, brokerID, messages)
-            }
-        }(followerID)
-    }
-    
-    wg.Wait()
-}
-
-func (rm *ReplicationManager) updateHighWaterMark(leader *LeaderReplica) {
-    minOffset := leader.LEO
-    
-    // High water mark is the minimum offset among all ISR members
-    for _, followerID := range leader.ISR {
-        if follower, exists := leader.Followers[followerID]; exists {
-            if follower.LastFetchOffset < minOffset {
-                minOffset = follower.LastFetchOffset
-            }
-        }
-    }
-    
-    leader.HW = minOffset
-    leader.Partition.HighWaterMark = minOffset
-}
-
-// Follower fetch process
-func (rm *ReplicationManager) StartFollowerFetching() {
-    for key, follower := range rm.followerPartitions {
-        go rm.followLeader(key, follower)
-    }
-}
-
-func (rm *ReplicationManager) followLeader(key PartitionKey, follower *FollowerReplica) {
-    ticker := time.NewTicker(100 * time.Millisecond) // Fetch every 100ms
-    defer ticker.Stop()
-    
-    for range ticker.C {
-        messages, err := rm.fetchFromLeader(follower.LeaderBroker, key, follower.FetchOffset)
-        if err != nil {
-            log.Printf("Failed to fetch from leader %d: %v", follower.LeaderBroker, err)
-            continue
-        }
-        
-        if len(messages) > 0 {
-            _, err := follower.Partition.Append(messages)
-            if err != nil {
-                log.Printf("Failed to append fetched messages: %v", err)
-                continue
-            }
-            
-            lastOffset := messages[len(messages)-1].Offset
-            follower.FetchOffset = lastOffset + 1
-            follower.LastSync = time.Now()
-        }
-    }
-}
-```
-
-### Coordinator Service
-
-The coordinator manages cluster metadata and broker orchestration:
-
-```go
-type Coordinator struct {
-    config       CoordinatorConfig
-    brokers      map[BrokerID]*BrokerInfo
-    topics       map[string]*TopicMetadata
-    assignments  map[PartitionKey]BrokerID
-    serviceManager *ServiceManager
-    console      *ConsoleServer
-    metadata     *MetadataStore
-    mutex        sync.RWMutex
-}
-
-type ServiceManager struct {
-    brokerProcesses  [5]*os.Process
-    producerProcess  *os.Process
-    consumerProcess  *os.Process
-    coordinator      *Coordinator
-}
-
-type BrokerInfo struct {
-    ID       BrokerID  `json:"id"`
-    Host     string    `json:"host"`
-    Port     int       `json:"port"`
-    Status   BrokerStatus `json:"status"`
-    LastSeen time.Time `json:"last_seen"`
-    Load     BrokerLoad `json:"load"`
-}
-
-type BrokerStatus string
-
-const (
-    BrokerStatusOnline  BrokerStatus = "online"
-    BrokerStatusOffline BrokerStatus = "offline"
-    BrokerStatusStarting BrokerStatus = "starting"
-    BrokerStatusStopping BrokerStatus = "stopping"
-)
-
-type BrokerLoad struct {
-    PartitionCount   int     `json:"partition_count"`
-    LeaderCount      int     `json:"leader_count"`
-    MessageRate      float64 `json:"message_rate"`
-    DiskUsageBytes   int64   `json:"disk_usage_bytes"`
-    CPUUsagePercent  float64 `json:"cpu_usage_percent"`
-}
-
-// Start all services automatically
-func (sm *ServiceManager) StartAll() error {
-    log.Println("Starting all services...")
-    
-    // Start 5 brokers
-    for i := 0; i < 5; i++ {
-        if err := sm.startBroker(i); err != nil {
-            return fmt.Errorf("failed to start broker %d: %w", i, err)
-        }
-    }
-    
-    // Wait for brokers to be ready
-    time.Sleep(2 * time.Second)
-    
-    // Start producer service
-    if err := sm.startProducer(); err != nil {
-        return fmt.Errorf("failed to start producer service: %w", err)
-    }
-    
-    // Start consumer service
-    if err := sm.startConsumer(); err != nil {
-        return fmt.Errorf("failed to start consumer service: %w", err)
-    }
-    
-    log.Println("All services started successfully")
-    return nil
-}
-
-func (sm *ServiceManager) startBroker(id int) error {
-    port := 9092 + id
-    
-    cmd := exec.Command("./bin/broker",
-        "--id", fmt.Sprintf("%d", id),
-        "--port", fmt.Sprintf("%d", port),
-        "--coordinator", "localhost:8080",
-        "--data-dir", fmt.Sprintf("./data/broker-%d", id))
-    
-    if err := cmd.Start(); err != nil {
-        return err
-    }
-    
-    sm.brokerProcesses[id] = cmd.Process
-    log.Printf("Started broker %d on port %d (PID: %d)", id, port, cmd.Process.Pid)
-    
-    return nil
-}
-
-func (sm *ServiceManager) startProducer() error {
-    cmd := exec.Command("./bin/producer",
-        "--port", "9093",
-        "--coordinator", "localhost:8080")
-    
-    if err := cmd.Start(); err != nil {
-        return err
-    }
-    
-    sm.producerProcess = cmd.Process
-    log.Printf("Started producer service on port 9093 (PID: %d)", cmd.Process.Pid)
-    
-    return nil
-}
-
-func (sm *ServiceManager) startConsumer() error {
-    cmd := exec.Command("./bin/consumer",
-        "--port", "9094",
-        "--coordinator", "localhost:8080")
-    
-    if err := cmd.Start(); err != nil {
-        return err
-    }
-    
-    sm.consumerProcess = cmd.Process
-    log.Printf("Started consumer service on port 9094 (PID: %d)", cmd.Process.Pid)
-    
-    return nil
-}
-
-// Console commands for service management
-type ConsoleServer struct {
-    coordinator *Coordinator
-    commands    map[string]CommandHandler
-}
-
-type CommandHandler func(args []string) (string, error)
-
-func (cs *ConsoleServer) Start() {
-    cs.registerCommands()
-    
-    listener, err := net.Listen("tcp", ":8081")
-    if err != nil {
-        log.Fatalf("Failed to start console server: %v", err)
-    }
-    
-    log.Println("Console server started on :8081")
-    
-    for {
-        conn, err := listener.Accept()
-        if err != nil {
-            log.Printf("Failed to accept connection: %v", err)
-            continue
-        }
-        
-        go cs.handleConnection(conn)
-    }
-}
-
-func (cs *ConsoleServer) registerCommands() {
-    cs.commands = map[string]CommandHandler{
-        "status":       cs.handleStatus,
-        "broker":       cs.handleBroker,
-        "producer":     cs.handleProducer,
-        "consumer":     cs.handleConsumer,
-        "topics":       cs.handleTopics,
-        "restart":      cs.handleRestart,
-        "shutdown":     cs.handleShutdown,
-    }
-}
-
-func (cs *ConsoleServer) handleStatus(args []string) (string, error) {
-    var result strings.Builder
-    
-    result.WriteString("System Status:\n")
-    result.WriteString("==============\n\n")
-    
-    // Broker status
-    result.WriteString("Brokers:\n")
-    for i := 0; i < 5; i++ {
-        brokerID := BrokerID(i)
-        if broker, exists := cs.coordinator.brokers[brokerID]; exists {
-            result.WriteString(fmt.Sprintf("  Broker %d: %s (Port: %d)\n", 
-                broker.ID, broker.Status, broker.Port))
-        } else {
-            result.WriteString(fmt.Sprintf("  Broker %d: offline\n", i))
-        }
-    }
-    
-    // Producer/Consumer status
-    result.WriteString(fmt.Sprintf("\nProducer Service: %s\n", cs.getServiceStatus("producer")))
-    result.WriteString(fmt.Sprintf("Consumer Service: %s\n", cs.getServiceStatus("consumer")))
-    
-    // Topic information
-    result.WriteString(fmt.Sprintf("\nTopics: %d\n", len(cs.coordinator.topics)))
-    for topicName, topic := range cs.coordinator.topics {
-        result.WriteString(fmt.Sprintf("  %s: %d partitions\n", topicName, len(topic.Partitions)))
-    }
-    
-    return result.String(), nil
-}
-
-func (cs *ConsoleServer) handleBroker(args []string) (string, error) {
-    if len(args) < 2 {
-        return "Usage: broker <list|start|stop|restart> [broker_id]", nil
-    }
-    
-    action := args[1]
-    
-    switch action {
-    case "list":
-        return cs.listBrokers(), nil
-    case "start", "stop", "restart":
-        if len(args) < 3 {
-            return fmt.Sprintf("Usage: broker %s <broker_id>", action), nil
-        }
-        
-        brokerID, err := strconv.Atoi(args[2])
-        if err != nil || brokerID < 0 || brokerID >= 5 {
-            return "Invalid broker ID. Must be 0-4", nil
-        }
-        
-        return cs.manageBroker(action, brokerID)
-    default:
-        return "Unknown broker command. Use: list, start, stop, restart", nil
-    }
-}
-
-func (cs *ConsoleServer) listBrokers() string {
-    var result strings.Builder
-    
-    result.WriteString("Broker List:\n")
-    result.WriteString("============\n")
-    
-    for i := 0; i < 5; i++ {
-        brokerID := BrokerID(i)
-        if broker, exists := cs.coordinator.brokers[brokerID]; exists {
-            result.WriteString(fmt.Sprintf("Broker %d: %s (Port: %d, Partitions: %d, Load: %.2f%%)\n",
-                broker.ID, broker.Status, broker.Port, 
-                broker.Load.PartitionCount, broker.Load.CPUUsagePercent))
-        } else {
-            result.WriteString(fmt.Sprintf("Broker %d: offline\n", i))
-        }
-    }
-    
-    return result.String()
-}
-```
-
-### Throughput Optimization
-
-Achieving high throughput requires optimizations at every level:
-
-```go
-// Network batching for efficient transmission
-type NetworkBatch struct {
-    Destination BrokerID    `json:"destination"`
-    Messages    []Message   `json:"messages"`
-    Compressed  []byte      `json:"compressed"`
-    Size        int         `json:"size"`
-    CreatedAt   time.Time   `json:"created_at"`
-}
-
-func (nb *NetworkBatch) Pack(compression CompressionType) error {
-    // Serialize all messages together
-    buffer := &bytes.Buffer{}
-    
-    for _, msg := range nb.Messages {
-        data, err := msg.Serialize()
-        if err != nil {
-            return err
-        }
-        
-        // Write message length + data
-        binary.Write(buffer, binary.BigEndian, uint32(len(data)))
-        buffer.Write(data)
-    }
-    
-    // Apply compression
-    switch compression {
-    case CompressionGzip:
-        nb.Compressed = gzipCompress(buffer.Bytes())
-    case CompressionSnappy:
-        nb.Compressed = snappyCompress(buffer.Bytes())
-    case CompressionLZ4:
-        nb.Compressed = lz4Compress(buffer.Bytes())
-    default:
-        nb.Compressed = buffer.Bytes()
-    }
-    
-    nb.Size = len(nb.Compressed)
-    return nil
-}
-
-// Zero-copy file operations for disk I/O
-func (s *LogSegment) SendFile(conn net.Conn, offset, length int64) error {
-    file, err := os.Open(s.File.Name())
-    if err != nil {
-        return err
-    }
-    defer file.Close()
-    
-    // Use sendfile() system call for zero-copy transfer
-    _, err = io.CopyN(conn, &io.LimitedReader{
-        R: io.NewSectionReader(file, offset, length),
-        N: length,
-    }, length)
-    
-    return err
-}
-
-// Memory pooling to reduce GC pressure
-var (
-    messagePool = sync.Pool{
-        New: func() interface{} {
-            return &Message{
-                Headers: make(map[string]string),
-            }
-        },
-    }
-    
-    bufferPool = sync.Pool{
-        New: func() interface{} {
-            return bytes.NewBuffer(make([]byte, 0, 4096))
-        },
-    }
-)
-
-func AcquireMessage() *Message {
-    msg := messagePool.Get().(*Message)
-    msg.Reset()
-    return msg
-}
-
-func ReleaseMessage(msg *Message) {
-    messagePool.Put(msg)
-}
-
-func AcquireBuffer() *bytes.Buffer {
-    buf := bufferPool.Get().(*bytes.Buffer)
-    buf.Reset()
-    return buf
-}
-
-func ReleaseBuffer(buf *bytes.Buffer) {
-    bufferPool.Put(buf)
-}
-
-// Worker pool for CPU-intensive operations
-type WorkerPool struct {
-    workerCount int
-    taskQueue   chan Task
-    workers     []*Worker
-    wg          sync.WaitGroup
-}
-
-type Task interface {
-    Execute() error
-}
-
-type Worker struct {
-    id        int
-    taskQueue chan Task
-    quit      chan bool
-}
-
-func NewWorkerPool(workerCount int, queueSize int) *WorkerPool {
-    return &WorkerPool{
-        workerCount: workerCount,
-        taskQueue:   make(chan Task, queueSize),
-        workers:     make([]*Worker, workerCount),
-    }
-}
-
-func (wp *WorkerPool) Start() {
-    for i := 0; i < wp.workerCount; i++ {
-        worker := &Worker{
-            id:        i,
-            taskQueue: wp.taskQueue,
-            quit:      make(chan bool),
-        }
-        
-        wp.workers[i] = worker
-        wp.wg.Add(1)
-        
-        go worker.Start(&wp.wg)
-    }
-}
-
-func (w *Worker) Start(wg *sync.WaitGroup) {
-    defer wg.Done()
-    
-    for {
-        select {
-        case task := <-w.taskQueue:
-            if err := task.Execute(); err != nil {
-                log.Printf("Worker %d task failed: %v", w.id, err)
-            }
-        case <-w.quit:
-            return
-        }
-    }
-}
-
-func (wp *WorkerPool) Submit(task Task) {
-    wp.taskQueue <- task
-}
-
-func (wp *WorkerPool) Stop() {
-    for _, worker := range wp.workers {
-        worker.quit <- true
-    }
-    wp.wg.Wait()
-}
-```
-
-This comprehensive implementation covers all the major components of a Kafka-like message queue system, complete with Go code examples for each subsystem. The design follows the plan structure while providing practical, production-ready code patterns.
