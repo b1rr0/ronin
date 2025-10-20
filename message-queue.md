@@ -504,8 +504,8 @@ func (c *Coordinator) assignPartitionLeaders() {
     }
 }
 ```
-In real app  thats handled by zookeeper
-more https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper
+
+**Note:** In real applications, this coordination and metadata management is handled by Zookeeper (or KRaft in newer Kafka versions). For more details about this architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
 
 ## Producers: Writing Messages to the System
 
@@ -549,6 +549,8 @@ type MessageHeader struct {
 ### Producer Service Implementation
 
 The producer is responsible for publishing messages to topics with intelligent partitioning and batching.
+
+![producer_write_to_partitions.png](assets/message_queue/producer_write_to_partitions.png)
 
 #### Metadata Discovery: How Producer Knows Where to Write
 
@@ -623,6 +625,107 @@ func (p *Producer) getTopicMetadata(topic string) (*TopicMetadata, error) {
 #### Load Balancing and Metadata Management
 
 The coordinator tracks broker load and helps producers make intelligent decisions. This process involves both selecting optimal partitions and efficiently managing metadata:
+
+**Partition Selection Strategies:**
+
+Kafka producers use various algorithms to distribute messages across partitions:
+
+```go
+type Partitioner interface {
+    Partition(message *Message, metadata *TopicMetadata) int32
+}
+
+// Round-robin partitioner
+type RoundRobinPartitioner struct {
+    counter int32
+}
+
+func (r *RoundRobinPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
+    partitionCount := metadata.PartitionCount
+    partition := atomic.AddInt32(&r.counter, 1) % partitionCount
+    return partition
+}
+
+// Key-based partitioner (consistent hashing)
+type KeyPartitioner struct{}
+
+func (k *KeyPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
+    if message.Key == nil {
+        // No key, use round-robin
+        return rand.Int31n(metadata.PartitionCount)
+    }
+    
+    hash := murmur3.Sum32(message.Key)
+    return int32(hash % uint32(metadata.PartitionCount))
+}
+
+// Sticky partitioner (Apache Kafka 2.4+)
+type StickyPartitioner struct {
+    stickyPartition int32
+    batchIsFull     bool
+    mutex           sync.Mutex
+}
+
+func (s *StickyPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
+    s.mutex.Lock()
+    defer s.mutex.Unlock()
+    
+    if message.Key != nil {
+        // Messages with keys always go to same partition
+        hash := murmur3.Sum32(message.Key)
+        return int32(hash % uint32(metadata.PartitionCount))
+    }
+    
+    // For messages without keys, stick to one partition until batch is full
+    if s.stickyPartition == -1 || s.batchIsFull {
+        s.stickyPartition = rand.Int31n(metadata.PartitionCount)
+        s.batchIsFull = false
+    }
+    
+    return s.stickyPartition
+}
+```
+
+**How Producer Chooses Partitions:**
+
+The partition selection algorithm is crucial for performance and ordering:
+
+**Key-based Partitioning:**
+- Messages with the same key always go to the same partition
+- Guarantees ordering within a key
+- Can cause hotspots if key distribution is uneven
+
+**Round-robin Distribution:**
+- Distributes load evenly across all partitions
+- Good for throughput when ordering isn't required
+- Simple but can fragment batches
+
+**Sticky Partitioning:**
+- Batches messages to the same partition until batch is full
+- Reduces latency by improving batch efficiency
+- Better network utilization
+
+```go
+func (p *Producer) selectPartition(message *Message, topicMetadata *TopicMetadata) int32 {
+    // Strategy 1: If partition is explicitly set, use it
+    if message.Partition >= 0 {
+        return message.Partition
+    }
+    
+    // Strategy 2: If message has key, use key-based partitioning
+    if message.Key != nil {
+        return p.keyBasedPartition(message.Key, topicMetadata.PartitionCount)
+    }
+    
+    // Strategy 3: Use sticky partitioning for better batching
+    return p.stickyPartitioner.Partition(message, topicMetadata)
+}
+
+func (p *Producer) keyBasedPartition(key []byte, partitionCount int32) int32 {
+    hash := murmur3.Sum32(key)
+    return int32(hash % uint32(partitionCount))
+}
+```
 
 **Load-Aware Partition Selection:**
 
@@ -719,187 +822,6 @@ func (p *Producer) getMetadataWithCache(topic string) (*TopicMetadata, error) {
 
 **For more information about load balancing challenges and solutions in Apache Kafka, see:** [How We Solve Load Balancing Challenges in Apache Kafka](https://medium.com/agoda-engineering/how-we-solve-load-balancing-challenges-in-apache-kafka-8cd88fdad02b)
 
-```go
-type Producer struct {
-    clientID     string
-    brokers      []string
-    partitioner  Partitioner
-    batcher      *MessageBatcher
-    serializer   Serializer
-    ackLevel     AckLevel
-    retryConfig  RetryConfig
-    metrics      *ProducerMetrics
-}
-
-type ProducerConfig struct {
-    Brokers         []string        `yaml:"brokers"`
-    ClientID        string          `yaml:"client_id"`
-    BatchSize       int             `yaml:"batch_size"`
-    LingerMs        int             `yaml:"linger_ms"`
-    Retries         int             `yaml:"retries"`
-    AckLevel        AckLevel        `yaml:"ack_level"`
-    Compression     CompressionType `yaml:"compression"`
-    RequestTimeout  time.Duration   `yaml:"request_timeout"`
-}
-
-// Send publishes a message to a topic
-func (p *Producer) Send(topic string, message *Message) error {
-    message.Topic = topic
-    message.Timestamp = time.Now().UnixNano()
-    
-    // 1. Serialize the message
-    serializedMsg, err := p.serializer.Serialize(message)
-    if err != nil {
-        return fmt.Errorf("serialization failed: %w", err)
-    }
-    
-    // 2. Select partition using partitioner
-    topicMetadata := p.getTopicMetadata(topic)
-    partition := p.partitioner.Partition(message, topicMetadata)
-    message.Partition = partition
-    
-    // 3. Add to batch
-    if p.batcher.Add(*message) {
-        // Batch is ready, send it
-        return p.flushBatch()
-    }
-    
-    return nil
-}
-
-func (p *Producer) flushBatch() error {
-    batch := p.batcher.Flush()
-    if len(batch) == 0 {
-        return nil
-    }
-    
-    // Group messages by partition
-    partitionBatches := make(map[int32][]Message)
-    for _, msg := range batch {
-        partitionBatches[msg.Partition] = append(partitionBatches[msg.Partition], msg)
-    }
-    
-    // Send to brokers
-    var wg sync.WaitGroup
-    for partition, messages := range partitionBatches {
-        wg.Add(1)
-        go func(p int32, msgs []Message) {
-            defer wg.Done()
-            err := p.sendToPartition(p, msgs)
-            if err != nil {
-                log.Printf("Failed to send batch to partition %d: %v", p, err)
-                // Implement retry logic here
-            }
-        }(partition, messages)
-    }
-    
-    wg.Wait()
-    return nil
-}
-```
-
-### Load Distribution Algorithms
-
-Kafka producers use various algorithms to distribute messages across partitions:
-
-#### 1. Partition Selection Strategies
-
-```go
-type Partitioner interface {
-    Partition(message *Message, metadata *TopicMetadata) int32
-}
-
-// Round-robin partitioner
-type RoundRobinPartitioner struct {
-    counter int32
-}
-
-func (r *RoundRobinPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
-    partitionCount := metadata.PartitionCount
-    partition := atomic.AddInt32(&r.counter, 1) % partitionCount
-    return partition
-}
-
-// Key-based partitioner (consistent hashing)
-type KeyPartitioner struct{}
-
-func (k *KeyPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
-    if message.Key == nil {
-        // No key, use round-robin
-        return rand.Int31n(metadata.PartitionCount)
-    }
-    
-    hash := murmur3.Sum32(message.Key)
-    return int32(hash % uint32(metadata.PartitionCount))
-}
-
-// Sticky partitioner (Apache Kafka 2.4+)
-type StickyPartitioner struct {
-    stickyPartition int32
-    batchIsFull     bool
-    mutex           sync.Mutex
-}
-
-func (s *StickyPartitioner) Partition(message *Message, metadata *TopicMetadata) int32 {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
-    
-    if message.Key != nil {
-        // Messages with keys always go to same partition
-        hash := murmur3.Sum32(message.Key)
-        return int32(hash % uint32(metadata.PartitionCount))
-    }
-    
-    // For messages without keys, stick to one partition until batch is full
-    if s.stickyPartition == -1 || s.batchIsFull {
-        s.stickyPartition = rand.Int31n(metadata.PartitionCount)
-        s.batchIsFull = false
-    }
-    
-    return s.stickyPartition
-}
-```
-
-#### 2. How Kafka Producer Chooses Partitions
-
-The partition selection algorithm is crucial for performance and ordering:
-
-**Key-based Partitioning:**
-- Messages with the same key always go to the same partition
-- Guarantees ordering within a key
-- Can cause hotspots if key distribution is uneven
-
-**Round-robin Distribution:**
-- Distributes load evenly across all partitions
-- Good for throughput when ordering isn't required
-- Simple but can fragment batches
-
-**Sticky Partitioning:**
-- Batches messages to the same partition until batch is full
-- Reduces latency by improving batch efficiency
-- Better network utilization
-
-```go
-func (p *Producer) selectPartition(message *Message, topicMetadata *TopicMetadata) int32 {
-    // Strategy 1: If partition is explicitly set, use it
-    if message.Partition >= 0 {
-        return message.Partition
-    }
-    
-    // Strategy 2: If message has key, use key-based partitioning
-    if message.Key != nil {
-        return p.keyBasedPartition(message.Key, topicMetadata.PartitionCount)
-    }
-    
-    // Strategy 3: Use sticky partitioning for better batching
-    return p.stickyPartitioner.Partition(message, topicMetadata)
-}
-
-func (p *Producer) keyBasedPartition(key []byte, partitionCount int32) int32 {
-    hash := murmur3.Sum32(key)
-    return int32(hash % uint32(partitionCount))
-}
-```
 
 ### Message Batching System
 
