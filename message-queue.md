@@ -1619,16 +1619,13 @@ Groups continuously cycle between Stable and rebalancing states as membership ch
 
 Here's how a consumer connects and starts reading messages:
 
-### **📡 Phase 1: Discovery & Connection**
-1. **Connect to any broker** from bootstrap server list
-2. **Request cluster info** → get all brokers, topics, partition leaders  
-3. **Cache metadata** locally for fast lookups
+### **📡 Phase 1: Connect & Discover**
+1. **Connect to any broker** → get cluster info
+2. **Cache metadata** (brokers, topics, leaders)
 
-### **👥 Phase 2: Join Consumer Group**
-4. **Find Group Coordinator** using hash(group_id) % brokers
-5. **Join group** → send session timeout + assignment preferences
-6. **Get partition assignment** from coordinator (range/round-robin/sticky)
-7. **Sync with other consumers** in the group
+### **👥 Phase 2: Join Group**
+3. **Find coordinator** → join consumer group
+4. **Get partition assignment** → sync with others
 
 ### **🔗 Phase 3: Setup Reading**
 8. **Find partition leaders** for assigned partitions
@@ -1649,11 +1646,11 @@ Here's how a consumer connects and starts reading messages:
 
 This process ensures **reliable message delivery**, **horizontal scaling** through groups, and **fault tolerance** through automatic recovery.
 
-## Protocols
+## Protocols for Consumers and Producers
 
 ### **Kafka Wire Protocol Foundation**
 
-All Kafka client-broker communication uses a **custom binary protocol over TCP**. This protocol is optimized for high throughput and low latency.
+Both **consumers** and **producers** communicate with Kafka brokers using the same **custom binary protocol over TCP**. This protocol is optimized for high throughput and low latency and is used by all Kafka clients regardless of whether they're reading (consuming) or writing (producing) messages.
 
 **Protocol Stack:**
 ```
@@ -1670,14 +1667,14 @@ Network Layer:        IP
 - **API Versioning**: Backward/forward compatibility through API versions
 - **Connection Pooling**: Persistent connections for reduced overhead
 
-### **Consumer and Producer Protocols**
+### **Communication Protocol Options**
 
-Kafka supports multiple protocols for both consumer and producer communication, each optimized for different use cases:
+Kafka supports multiple protocols that both **consumers** (readers) and **producers** (writers) can use to communicate with brokers. Each protocol is optimized for different use cases:
 
 #### **1. Kafka Native Protocol (Wire Protocol)**
 ```go
-// Native Kafka TCP protocol - most efficient
-type KafkaConsumer struct {
+// Native Kafka TCP protocol - most efficient for both consumers and producers
+type KafkaClient struct {
     BootstrapServers []string `yaml:"bootstrap_servers"`
     Protocol         string   `yaml:"protocol"` // "kafka" 
     SecurityProtocol string   `yaml:"security_protocol"` // "PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"
@@ -1692,35 +1689,76 @@ type KafkaConsumer struct {
 
 #### **2. HTTP REST API Protocol**
 ```go
-// REST API consumer for web applications
-type RESTConsumer struct {
+// REST API client for web applications (both consumers and producers)
+type RESTClient struct {
     BaseURL          string `yaml:"base_url"`           // "http://kafka-rest:8082"
     ConsumerInstance string `yaml:"consumer_instance"`  // "my-consumer-instance"
     Format          string `yaml:"format"`             // "json", "avro", "binary"
+    LongPollTimeout  int    `yaml:"long_poll_timeout"`  // 30000ms (30 seconds)
+    MaxBytes         int    `yaml:"max_bytes"`          // 1048576 (1MB)
 }
 
-// REST API request example
+// REST API consumer creation
 POST /consumers/my-consumer-group
 {
   "name": "my-consumer-instance",
   "format": "json",
   "auto.offset.reset": "earliest"
 }
+
+// Long polling request for consuming messages
+GET /consumers/my-consumer-group/instances/my-consumer/records?timeout=30000&max_bytes=1048576
 ```
 
 **Key Features:**
 - **HTTP-based**: Standard HTTP requests for easy integration
+- **Long Polling**: Server holds request open until messages arrive or timeout
 - **JSON Format**: Human-readable message format
 - **Stateless**: Each request is independent
 - **Web Integration**: Perfect for web applications and microservices
 
+**How REST Long Polling Works:**
+1. **Client sends GET request** with timeout parameter (e.g., 30 seconds)
+2. **Server waits** for new messages or until timeout expires
+3. **Server responds** immediately when messages arrive OR after timeout
+4. **Client processes** received messages and immediately sends next request
+5. **Continuous cycle** creates near real-time message delivery
+
+```javascript
+// Long polling implementation example
+async function longPollConsume() {
+    while (true) {
+        try {
+            const response = await fetch(
+                '/consumers/my-group/instances/my-consumer/records?timeout=30000&max_bytes=1048576',
+                { 
+                    method: 'GET',
+                    headers: { 'Accept': 'application/vnd.kafka.json.v2+json' }
+                }
+            );
+            
+            const messages = await response.json();
+            if (messages.length > 0) {
+                processMessages(messages);
+                await commitOffsets();
+            }
+            // Immediately start next long poll request
+        } catch (error) {
+            console.error('Long poll error:', error);
+            await sleep(5000); // Wait before retry on error
+        }
+    }
+}
+```
+
 #### **3. gRPC Protocol**
 ```go
-// gRPC consumer for microservices
-type GRPCConsumer struct {
+// gRPC client for microservices (both consumers and producers)
+type GRPCClient struct {
     ServerAddress string `yaml:"server_address"` // "kafka-grpc:9093"
     TLSEnabled    bool   `yaml:"tls_enabled"`
     AuthToken     string `yaml:"auth_token"`
+    StreamBuffer  int    `yaml:"stream_buffer"`   // 1000 messages
 }
 
 // gRPC service definition
@@ -1737,21 +1775,73 @@ service KafkaConsumerService {
 - **Efficient**: Binary serialization with HTTP/2
 - **Cross-Language**: Works across different programming languages
 
+**How gRPC Streaming Works:**
+1. **Client opens stream** by calling `Subscribe()` RPC method
+2. **Server pushes messages** continuously through the open stream
+3. **Client receives** messages in real-time as they arrive
+4. **Backpressure control** - client can slow down if overwhelmed
+5. **Automatic reconnection** on connection failures
+
+```go
+// gRPC streaming consumer example
+func (c *GRPCClient) StartConsuming() error {
+    stream, err := c.client.Subscribe(context.Background(), &SubscribeRequest{
+        Topics:  []string{"user-events"},
+        GroupId: "my-group",
+    })
+    if err != nil {
+        return err
+    }
+    
+    // Listen for incoming messages on the stream
+    for {
+        message, err := stream.Recv()
+        if err != nil {
+            log.Printf("Stream error: %v", err)
+            return c.reconnectAndRetry()
+        }
+        
+        // Process message immediately as it arrives
+        go c.processMessage(message)
+    }
+}
+```
+
+**gRPC Advantages:**
+- **True streaming** - no polling overhead
+- **Built-in flow control** - handles backpressure automatically
+- **Connection multiplexing** - multiple streams over single connection
+- **Efficient binary protocol** - lower bandwidth usage
+
 #### **4. WebSocket Protocol**
 ```go
-// WebSocket consumer for real-time web applications
-type WebSocketConsumer struct {
+// WebSocket client for real-time web applications (both consumers and producers)
+type WebSocketClient struct {
     URL             string `yaml:"url"`              // "wss://kafka-ws:8080/consume"
     Topics          []string `yaml:"topics"`
     GroupID         string `yaml:"group_id"`
     ReconnectDelay  time.Duration `yaml:"reconnect_delay"`
+    PingInterval    time.Duration `yaml:"ping_interval"`    // 30s keepalive
+    MaxMessageSize  int64 `yaml:"max_message_size"`         // 1MB
 }
 
-// WebSocket message format
+// WebSocket subscription message
 {
   "type": "subscribe",
   "topics": ["user-events"],
-  "group_id": "web-notifications"
+  "group_id": "web-notifications",
+  "offset_reset": "earliest"
+}
+
+// WebSocket incoming message format
+{
+  "type": "message",
+  "topic": "user-events",
+  "partition": 0,
+  "offset": 12345,
+  "key": "user-123",
+  "value": {"action": "login", "timestamp": 1642680000},
+  "headers": {"source": "web-app"}
 }
 ```
 
@@ -1761,10 +1851,87 @@ type WebSocketConsumer struct {
 - **Auto-Reconnect**: Automatic reconnection on connection loss
 - **JSON Messages**: Easy to parse in JavaScript
 
+**How WebSocket Listening Works:**
+1. **Client establishes WebSocket connection** to Kafka WebSocket proxy
+2. **Client sends subscription message** with topics and group ID
+3. **Server pushes messages** immediately as they arrive in Kafka
+4. **Event-driven processing** - client receives `onmessage` events
+5. **Bidirectional communication** - client can send acknowledgments back
+
+```javascript
+// WebSocket consumer implementation
+class WebSocketKafkaConsumer {
+    constructor(url, topics, groupId) {
+        this.url = url;
+        this.topics = topics;
+        this.groupId = groupId;
+        this.reconnectDelay = 5000;
+    }
+    
+    connect() {
+        this.ws = new WebSocket(this.url);
+        
+        this.ws.onopen = () => {
+            console.log('WebSocket connected');
+            // Subscribe to topics
+            this.ws.send(JSON.stringify({
+                type: 'subscribe',
+                topics: this.topics,
+                group_id: this.groupId
+            }));
+        };
+        
+        // Listen for incoming messages
+        this.ws.onmessage = (event) => {
+            const message = JSON.parse(event.data);
+            if (message.type === 'message') {
+                this.processMessage(message);
+                
+                // Send acknowledgment
+                this.ws.send(JSON.stringify({
+                    type: 'ack',
+                    topic: message.topic,
+                    partition: message.partition,
+                    offset: message.offset
+                }));
+            }
+        };
+        
+        this.ws.onclose = () => {
+            console.log('WebSocket disconnected, reconnecting...');
+            setTimeout(() => this.connect(), this.reconnectDelay);
+        };
+        
+        this.ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+        };
+    }
+    
+    processMessage(message) {
+        console.log('Received:', message);
+        // Process message immediately
+    }
+}
+
+// Usage
+const consumer = new WebSocketKafkaConsumer(
+    'wss://kafka-ws:8080/consume',
+    ['user-events', 'orders'],
+    'web-consumer-group'
+);
+consumer.connect();
+```
+
+**WebSocket Advantages:**
+- **Real-time push** - messages arrive immediately, no polling
+- **Low overhead** - persistent connection, minimal protocol overhead  
+- **Browser native** - works directly in web browsers without extra libraries
+- **Bidirectional** - can send acknowledgments and control messages back
+
 ### **Protocol Comparison**
 
-| Protocol | Throughput | Latency | Complexity | Use Case |
-|----------|------------|---------|------------|----------|
+|Protocol | Throughput | Latency | Complexity | Use Case |
+|---------|------------|---------|------------|----------|
 | **Kafka Native** | Very High | Very Low | Medium | High-throughput applications |
 | **HTTP REST** | Medium | Medium | Low | Web applications, microservices |
 | **gRPC** | High | Low | Medium | Microservices, cross-language |
