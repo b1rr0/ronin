@@ -245,8 +245,6 @@ Message brokers (Kafka, RabbitMQ, NATS, Pulsar, etc.) are distributed systems an
 
 ## Let's Look Inside: How Apache Kafka Works
 
-## Kafka's Internal Architecture by Example
-
 ### Brokers: The Foundation
 
 The Kafka cluster consists of brokers. You can think of the system as a data center and servers in it. When first getting acquainted, think of a Kafka broker as a computer: it's a process in the operating system with access to its local disk.
@@ -289,15 +287,6 @@ In Kafka, these physical parts are called **partitions**. Each topic consists of
 - Topics are split into partitions for scalability and performance
 
 Formally, a partition is a strictly ordered log of messages stored physically on disk. Each message in it is added to the end without the possibility of changing it in the future and somehow affecting already written messages. At the same time, the topic as a whole has no order, but the order of messages always exists within each individual partition.
-
-**Physical Storage Hierarchy:**
-```
-Topic (logical)
-├── Partition 0 (physical) → Broker 1
-├── Partition 1 (physical) → Broker 2  
-└── Partition 2 (physical) → Broker 3
-```
-
 #### Key-Based Partitioning and Scaling Limitations
 
 Messages in Kafka have a structure that includes a key field:
