@@ -84,8 +84,6 @@ h6 { font-size: 1.0rem !important; }
 }
 </style>
 
-# Inside Message Broker
-
 ## Introduction
 
 In the world of multi-tier distributed systems, there is a critical need for message queues. They solve fundamental communication problems between services, providing reliable asynchronous data transmission and creating the foundation for scalable, fault-tolerant architectures.
@@ -264,8 +262,7 @@ A topic is a **logical division** of message categories into groups. For example
 The key word here is **logical**. Topics are conceptual containers that organize related messages together. We create topics for events of a common group and try not to mix them with each other. For example, partner coordinates should not be in the same topic as order statuses, and updated order statuses should not be stored mixed with user registration updates.
 
 **Topics are logical splits** - they define what kind of data goes where, but they don't determine how the data is physically stored.
-![topics.png](assets/message_queue/topics.png)
-
+![send_to_topic.png](assets/message_queue/send_to_topic.png)
 It's convenient to think of a topic as a log - you write an event to the end and don't destroy the chain of old events in the process. General logic:
 
 - One producer can write to one or more topics
@@ -275,18 +272,24 @@ It's convenient to think of a topic as a log - you write an event to the end and
 
 Theoretically, there are no restrictions on the number of these topics, but practically this is limited by the number of partitions.
 #### Partitions: Physical Splitting of Data
-![kafka_patrition.png](assets/message_queue/kafka_patrition.png)
+While topics provide logical organization, partitions handle the physical splitting of data. There are no restrictions on the number of topics in a Kafka cluster, but
+computer hardware imposes natural limitations. As operations consume processor resources and I/O capacity, systems eventually hit performance ceilings.
 
-While topics provide logical organization, **partitions handle the physical splitting of data**. There are no restrictions on the number of topics in a Kafka cluster, but there are limitations of the computer itself. It performs operations on the processor, input-output, and eventually hits its limit. We cannot increase the power and performance of machines indefinitely, so the topic data must be divided into physical parts.
-
-In Kafka, these physical parts are called **partitions**. Each topic consists of one or more partitions, each of which can be placed on different brokers. This is how Kafka achieves horizontal scaling: you can create a topic, divide it into partitions, and place each partition on a separate broker.
+Since we cannot increase machine power indefinitely, topic data must be divided into physical parts called partitions. Each topic consists of one or more partitions that
+can be distributed across different brokers. This enables Kafka's horizontal scaling: create a topic, divide it into partitions, and place each partition on separate
+brokers to distribute the workload.
+![topics.png](assets/message_queue/topics.png)
 
 **Key Relationship: Topics ⊃ Partitions**
 - **Topics** = Logical containers (what data category)
 - **Partitions** = Physical storage units (where and how data is stored)
 - Topics are split into partitions for scalability and performance
-
 Formally, a partition is a strictly ordered log of messages stored physically on disk. Each message in it is added to the end without the possibility of changing it in the future and somehow affecting already written messages. At the same time, the topic as a whole has no order, but the order of messages always exists within each individual partition.
+
+**Partition Replication and High Availability**
+![kafka_patrition.png](assets/message_queue/kafka_patrition.png)
+
+Each partition has one **leader** broker that handles all reads and writes, while **follower replicas** (clones) are maintained on other brokers. If the leader broker fails, one of the followers automatically becomes the new leader, ensuring continuous operation. This replication mechanism provides fault tolerance and prevents data loss.
 #### Key-Based Partitioning and Scaling Limitations
 
 Messages in Kafka have a structure that includes a key field:
@@ -327,48 +330,6 @@ Other partitions may be idle → Poor scaling
 
 This means that even with 100 partitions, if all your messages have the same key, only 1 partition will be used, and you lose the benefits of horizontal scaling.
 
-The partitions themselves are physically represented on disks as segments. These are separate files that can be created, rotated, or deleted according to the data aging settings in them. Usually you don't have to often remember about partition segments unless you administer the cluster, but it's important to remember the data storage model in Kafka topics.
-
-```go
-// Segment represents a physical file storing messages
-type LogSegment struct {
-    BaseOffset   int64     `json:"base_offset"`
-    File         *os.File  `json:"-"`
-    Size         int64     `json:"size"`
-    MaxSize      int64     `json:"max_size"`
-    CreatedAt    time.Time `json:"created_at"`
-    MessageCount int       `json:"message_count"`
-    IsActive     bool      `json:"is_active"`
-}
-
-// Partition contains multiple segments
-type Partition struct {
-    ID            int32          `json:"id"`
-    Topic         string         `json:"topic"`
-    Segments      []*LogSegment  `json:"segments"`
-    ActiveSegment *LogSegment    `json:"active_segment"`
-    HighWaterMark int64          `json:"high_water_mark"`
-    LogStartOffset int64         `json:"log_start_offset"`
-    Leader        BrokerID       `json:"leader"`
-    Replicas      []BrokerID     `json:"replicas"`
-    ISR           []BrokerID     `json:"isr"`
-}
-
-// Topic contains multiple partitions
-type Topic struct {
-    Name             string                `json:"name"`
-    Partitions       map[int32]*Partition  `json:"partitions"`
-    ReplicationFactor int                 `json:"replication_factor"`
-    Config           TopicConfig           `json:"config"`
-}
-
-type TopicConfig struct {
-    RetentionMs     int64  `json:"retention_ms"`
-    SegmentMs       int64  `json:"segment_ms"`
-    CleanupPolicy   string `json:"cleanup_policy"`
-    CompressionType string `json:"compression_type"`
-}
-```
 
 ### Coordinator Service: Managing the Cluster
 ![zookeeper.png](assets/message_queue/zookeeper.png)
@@ -1010,6 +971,8 @@ Kafka organizes data on disk in a hierarchical structure:
 
 **Segment Files Explained:**
 
+The partitions themselves are physically represented on disks as segments. These are separate files that can be created, rotated, or deleted according to the data aging settings in them. Usually you don't have to often remember about partition segments unless you administer the cluster, but it's important to remember the data storage model in Kafka topics.
+
 Each partition is divided into segments. A segment is simply a file on disk containing a portion of the log. When a segment reaches a certain size (default 1GB) or age (default 7 days), it's closed and a new segment is created.
 
 - **Log files (.log)**: Contain the actual message data
@@ -1335,6 +1298,69 @@ Time Index Entry Format (12 bytes each):
 - **Sparse entries**: Not every message, typically every segment boundary
 - **Monotonic timestamps**: Entries must be in chronological order
 - **Time-based queries**: Enable "read from timestamp X" operations
+
+#### 4. Leader Epoch Checkpoint - Leader Election Tracking
+
+```
+│   └── leader-epoch-checkpoint     # Leader epoch data
+```
+
+The leader-epoch-checkpoint file tracks leadership changes for high availability and consistency:
+
+- **Leader epochs**: Sequential numbers assigned each time a new leader is elected
+- **Offset tracking**: Records the starting offset for each leader's term
+- **Consistency guarantees**: Prevents data loss during leader failover scenarios
+- **Recovery mechanism**: Helps determine valid data range after broker restarts
+
+**Internal Format:**
+```
+Leader Epoch Checkpoint File Structure:
+┌─────────────┬──────────────┬─────────────┬──────────────┐
+│ Version     │ Entry Count  │ Epoch 0     │ Start Offset │
+│ 4 bytes     │ 4 bytes      │ 4 bytes     │ 8 bytes      │
+│ (int32)     │ (int32)      │ (int32)     │ (int64)      │
+├─────────────┼──────────────┼─────────────┼──────────────┤
+│             │              │ Epoch 1     │ Start Offset │
+│             │              │ 4 bytes     │ 8 bytes      │
+│             │              │ (int32)     │ (int64)      │
+└─────────────┴──────────────┴─────────────┴──────────────┘
+
+Example content:
+Version: 0
+Entry Count: 3
+Epoch 0: Start Offset 0
+Epoch 1: Start Offset 12345
+Epoch 2: Start Offset 25000
+```
+
+#### 5. Consumer Offset Log - Internal Topic Storage
+
+```
+└── __consumer_offsets-0/  # Internal Kafka topic for offset storage
+    ├── 00000000000000000000.log
+    └── ...
+```
+
+The `__consumer_offsets` topic stores consumer group progress and metadata:
+
+- **Offset commits**: Records where each consumer group has read up to
+- **Group metadata**: Stores consumer group membership and partition assignments
+- **Automatic cleanup**: Old offset records are periodically compacted
+- **Distributed storage**: Replicated across brokers like any other topic
+
+**Internal Format:**
+```
+Consumer Offset Message Structure:
+┌──────────────────┬─────────────────┬──────────────────┐
+│ Key              │ Value           │ Headers          │
+│ (Group+Topic+    │ (Offset+        │ (Timestamp+      │
+│  Partition)      │  Metadata)      │  Expiry)         │
+└──────────────────┴─────────────────┴──────────────────┘
+
+my-group|user-events|0 → offset:12345, epoch:2, ts:1642680000000
+my-group|user-events|1 → offset:23456, epoch:2, ts:1642680000000
+my-group|orders|0 → offset:5678, epoch:1, ts:1642680000000
+```
 ### Message Write Flow: From Producer to Log
 
 Here's the complete flow of how a message travels from producer to being stored in log files:
@@ -1499,535 +1525,309 @@ This flow ensures durability, ordering, and efficient retrieval while maintainin
 
 **Further Reading**: For more detailed information about Kafka log performance and internals, see [Kafka Performance: Kafka Logs](https://www.redpanda.com/guides/kafka-performance-kafka-logs).
 
-### Consumer Service
+### Consumer Service: Reading Messages from Topics
 
-The consumer pulls messages from topics and manages offset tracking:
+## Communication Protocols and Connection Flow
+
+### **Kafka Wire Protocol - TCP-based Binary Communication**
+
+All Kafka client-broker communication uses a **custom binary protocol over TCP**. This protocol is optimized for high throughput and low latency.
+
+**Protocol Stack:**
+```
+Application Layer:    Kafka API Requests (Fetch, Produce, Metadata, etc.)
+Transport Layer:      TCP (reliable, ordered delivery)
+Network Layer:        IP
+```
+
+
+
+The complete consumer connection and message reading process follows this systematic flow:
+
+**Phase 1: Initial Connection & Discovery**
+1. **Bootstrap Connection**: Consumer connects to any available broker from the bootstrap server list
+2. **Cluster Metadata Request**: Sends `MetadataRequest` to discover all brokers, topics, and partition leaders in the cluster
+3. **Local Cache Update**: Consumer updates its local metadata cache with cluster topology information
+
+**Phase 2: Group Coordination & Assignment**
+4. **Group Coordinator Discovery**: Consumer hashes its `group.id` to find which broker serves as the Group Coordinator
+5. **Group Join Protocol**: Sends `JoinGroupRequest` with session timeout, supported assignment strategies, and consumer metadata
+6. **Partition Assignment**: Receives partition assignment from Group Coordinator based on the group's assignment strategy (range, round-robin, etc.)
+7. **Assignment Synchronization**: All group members sync their assignments via `SyncGroupRequest`/`SyncGroupResponse`
+
+**Phase 3: Data Reading Setup**
+8. **Partition Leader Discovery**: For each assigned partition, consumer identifies the current leader broker from metadata
+9. **Offset Position Recovery**: Consumer retrieves committed offsets from `__consumer_offsets` topic to determine starting read position
+10. **Fetch Connection Establishment**: Opens connections to all partition leader brokers
+
+**Phase 4: Message Consumption Loop**
+11. **Fetch Request Cycle**: Consumer sends `FetchRequest` to each partition leader with:
+    - Current offset position
+    - Maximum wait time (500ms default)
+    - Minimum bytes threshold (1KB default)
+    - Maximum bytes per partition (1MB default)
+
+12. **Log Segment Reading**: Broker locates the appropriate log segment, uses index files to find offset position, and reads message batch
+13. **Message Batch Processing**: Consumer deserializes and processes the received message batch
+14. **Offset Management**: Consumer updates local offset tracking and commits progress to `__consumer_offsets`
+15. **Heartbeat Coordination**: Consumer sends periodic heartbeats to Group Coordinator to maintain group membership
+
+**Phase 5: Continuous Operation**
+16. **Rebalance Detection**: Consumer monitors for group membership changes or partition reassignments
+17. **Metadata Refresh**: Periodically refreshes cluster metadata to handle broker failures or topology changes
+18. **Error Handling**: Implements retry logic for temporary failures and failover for permanent broker failures
+
+This flow ensures **reliable, ordered message consumption** while providing **horizontal scalability** through consumer groups and **fault tolerance** through automatic failover and rebalancing mechanisms.
+
+## What is a Consumer
+
+A **Consumer** is a client that reads messages from Kafka topics. Consumers retrieve data from one or more partitions and process them at their own pace.
+
+![send_to_topic.png](assets/message_queue/send_to_topic.png)
+
+*Basic Kafka architecture showing producers sending messages to topics, which are then consumed by consumers. This illustrates the fundamental data flow where producers write to topics and consumers read from them.*
+
+### Core Consumer Principles
+
+- **Pull-based model**: Consumers actively request data from brokers (rather than receiving push notifications)
+- **Offset tracking**: Consumers track their reading position in each partition
+- **Stateful**: Consumers remember where they stopped, even after restarts
 
 ```go
 type Consumer struct {
-    groupID     string
-    topics      []string
-    assignment  map[string][]int32 // topic -> partitions
-    offsets     map[TopicPartition]int64
-    coordinator *GroupCoordinator
-    fetcher     *MessageFetcher
-    processor   MessageProcessor
-    config      ConsumerConfig
-}
-
-type ConsumerConfig struct {
-    GroupID              string        `yaml:"group_id"`
-    Topics               []string      `yaml:"topics"`
-    AutoOffsetReset      OffsetReset   `yaml:"auto_offset_reset"`
-    EnableAutoCommit     bool          `yaml:"enable_auto_commit"`
-    AutoCommitInterval   time.Duration `yaml:"auto_commit_interval"`
-    SessionTimeout       time.Duration `yaml:"session_timeout"`
-    HeartbeatInterval    time.Duration `yaml:"heartbeat_interval"`
-    MaxPollRecords       int           `yaml:"max_poll_records"`
-    FetchMinBytes        int           `yaml:"fetch_min_bytes"`
-    FetchMaxWait         time.Duration `yaml:"fetch_max_wait"`
+    groupID     string                    // Group identifier
+    topics      []string                  // Subscribed topics  
+    assignment  map[string][]int32        // topic -> partitions
+    offsets     map[TopicPartition]int64  // Current reading positions
+    coordinator *GroupCoordinator         // Group coordinator
+    fetcher     *MessageFetcher          // Message fetching component
+    processor   MessageProcessor         // Message processor
+    config      ConsumerConfig          // Configuration
 }
 
 type TopicPartition struct {
     Topic     string `json:"topic"`
     Partition int32  `json:"partition"`
 }
-
-### Consumer Design and Operation
-
-A typical consumer program works like this: when starting, a timer works inside it, which periodically polls new records from broker partitions. The poller receives a list of batches related to topics and partitions from which the consumer reads. Next, the received messages in batches are deserialized. As a result, the consumer, as a rule, somehow processes the messages.
-
-At the end of reading, the consumer can commit the offset - remember the position of read records and continue reading the new portion of data. You can read both synchronously and asynchronously. The offset can be committed or not committed at all.
-
-Thus, if the consumer read a message from a partition, processed it, and then crashed without committing the offset, then the next connected consumer on the next connection will read the same portion of data again.
-
-The main thing is that the consumer periodically reads a new portion of data, deserializes it, and then processes it.
-
-```go
-// Consumer workflow implementation
-func (c *Consumer) Start() error {
-    // Start heartbeat routine for group coordination
-    go c.sendHeartbeats()
-    
-    // Start offset commit routine if auto-commit enabled
-    if c.config.EnableAutoCommit {
-        go c.autoCommitOffsets()
-    }
-    
-    // Main polling loop
-    for {
-        messages, err := c.Poll(c.config.PollTimeout)
-        if err != nil {
-            log.Printf("Poll error: %v", err)
-            continue
-        }
-        
-        if len(messages) > 0 {
-            err = c.processMessages(messages)
-            if err != nil {
-                log.Printf("Processing error: %v", err)
-                continue
-            }
-            
-            // Commit offsets after successful processing
-            if !c.config.EnableAutoCommit {
-                err = c.CommitSync()
-                if err != nil {
-                    log.Printf("Commit error: %v", err)
-                }
-            }
-        }
-    }
-}
-
-func (c *Consumer) processMessages(messages []Message) error {
-    for _, msg := range messages {
-        // Deserialize message
-        event, err := c.deserializer.Deserialize(msg.Value)
-        if err != nil {
-            return fmt.Errorf("deserialization failed: %w", err)
-        }
-        
-        // Process business logic
-        err = c.processor.Process(event)
-        if err != nil {
-            return fmt.Errorf("message processing failed: %w", err)
-        }
-        
-        // Update local offset tracking
-        tp := TopicPartition{Topic: msg.Topic, Partition: msg.Partition}
-        c.offsets[tp] = msg.Offset + 1
-    }
-    
-    return nil
-}
 ```
 
-// Poll retrieves messages from assigned partitions
-func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
-ctx, cancel := context.WithTimeout(context.Background(), timeout)
-defer cancel()
+## What is a Consumer Group
 
-    var allMessages []Message
-    
-    for topic, partitions := range c.assignment {
-        for _, partition := range partitions {
-            tp := TopicPartition{Topic: topic, Partition: partition}
-            offset := c.offsets[tp]
-            
-            messages, err := c.fetcher.Fetch(ctx, tp, offset, c.config.MaxPollRecords)
-            if err != nil {
-                return nil, fmt.Errorf("failed to fetch from %s-%d: %w", topic, partition, err)
-            }
-            
-            allMessages = append(allMessages, messages...)
-            
-            // Update offset for next poll
-            if len(messages) > 0 {
-                lastOffset := messages[len(messages)-1].Offset
-                c.offsets[tp] = lastOffset + 1
-            }
-        }
-    }
-    
-    return allMessages, nil
-}
+### **Consumer Group = Group of Consumers for Horizontal Scaling**
 
-// Commit offsets for processed messages
-func (c *Consumer) CommitSync() error {
-return c.coordinator.CommitOffsets(c.groupID, c.offsets)
-}
+A **Consumer Group** is a group of Consumers with the same `group.id` that **collectively** read from a topic, **distributing partitions among themselves**.
 
-func (c *Consumer) CommitAsync() {
-go func() {
-if err := c.CommitSync(); err != nil {
-log.Printf("Failed to commit offsets: %v", err)
-}
-}()
-}
-```
+### **Key Consumer Group Principles:**
 
-### Consumer Groups
-
-It would be strange if only one consumer was engaged in reading all partitions. They can be combined into a cluster - consumer groups.
-
-You have before your eyes a canonical diagram: on the left side are producers, in the middle are topics, and on the right are consumers. There are two producers, each writing to its own topic, each topic has three partitions.
-
-There is one consumer group with two instances of the same program - this is the same program, running twice. This consumer program reads two topics: X and Y.
-
-The consumer connects to the broker with the leader partition, polls changes in the partition, reads messages, fills the buffer, and then processes the received messages.
-
-Note that the partitions are distributed cooperatively: each consumer got three partitions. The distribution of partitions between consumers within one group is performed automatically on the broker side. Kafka tries to fairly distribute partitions between consumer groups, as much as possible.
-
-Each such group has its own identifier, which allows registering on Kafka brokers. The namespace of consumer groups is global, which means their names in the Kafka cluster are unique.
-
-Finally, the most important thing: Kafka saves on its side the current offset for each partition of topics that are part of the consumer group. When connecting or disconnecting consumers from the group, reading will continue from the last saved position. This makes consumer groups indispensable when working with event-driven systems: we can deploy our applications without problems and not think about storing offsets on the client side.
-
-For this, the consumer in the group, after processing read messages, sends a request to save the offset - or commits its offset. Technically, there are no restrictions on committing the offset before processing messages, but for most scenarios it's more reasonable to do this after.
-
-### Consumer Groups and Rebalancing
-
-Consumer groups enable horizontal scaling of message processing:
+1. **One partition = one Consumer per group**
+2. **One Consumer can read multiple partitions**
+3. **Automatic partition distribution**
+4. **Shared offset tracking**
 
 ```go
-type GroupCoordinator struct {
-    groups      map[string]*ConsumerGroup
-    assignments map[string]map[string][]TopicPartition // groupID -> consumerID -> partitions
-    offsets     map[string]map[TopicPartition]int64    // groupID -> partition -> offset
-    mutex       sync.RWMutex
-    rebalancer  Rebalancer
-}
-
 type ConsumerGroup struct {
-    ID           string                    `json:"id"`
-    Members      map[string]*GroupMember   `json:"members"`
-    Leader       string                    `json:"leader"`
-    Protocol     string                    `json:"protocol"`
-    State        GroupState                `json:"state"`
-    Generation   int32                     `json:"generation"`
+    ID           string                    `json:"id"`          // "payment-service-group"
+    Members      map[string]*GroupMember   `json:"members"`     // List of Consumers
+    Leader       string                    `json:"leader"`      // Group leader
+    State        GroupState                `json:"state"`       // Group state
+    Generation   int32                     `json:"generation"`  // Generation (after rebalance)
 }
 
 type GroupMember struct {
-    ID             string    `json:"id"`
-    Host           string    `json:"host"`
-    Topics         []string  `json:"topics"`
-    LastHeartbeat  time.Time `json:"last_heartbeat"`
-    SessionTimeout time.Duration `json:"session_timeout"`
+    ID             string           `json:"id"`             // Consumer ID
+    Host           string           `json:"host"`           // Consumer host
+    Topics         []string         `json:"topics"`         // Subscribed topics
+    Assignment     []TopicPartition `json:"assignment"`     // Assigned partitions
+    LastHeartbeat  time.Time        `json:"last_heartbeat"` // Last heartbeat
+    SessionTimeout time.Duration    `json:"session_timeout"`// Session timeout
 }
+```
 
-type GroupState string
+### **Consumer Group Examples with Visual Diagrams:**
 
-const (
-    GroupStateStable      GroupState = "Stable"
-    GroupStateRebalancing GroupState = "Rebalancing"
-    GroupStateEmpty       GroupState = "Empty"
-    GroupStateDead        GroupState = "Dead"
-)
+#### **Scenario 1: Single Consumer**
+![single_in_a_consumer_group.png](assets/message_queue/single_in_a_consumer_group.png)
 
-// JoinGroup handles new consumer joining a group
-func (gc *GroupCoordinator) JoinGroup(groupID, memberID string, topics []string, sessionTimeout time.Duration) error {
-    gc.mutex.Lock()
-    defer gc.mutex.Unlock()
-    
-    group, exists := gc.groups[groupID]
-    if !exists {
-        group = &ConsumerGroup{
-            ID:      groupID,
-            Members: make(map[string]*GroupMember),
-            State:   GroupStateEmpty,
-        }
-        gc.groups[groupID] = group
-    }
-    
-    member := &GroupMember{
-        ID:             memberID,
-        Topics:         topics,
-        LastHeartbeat:  time.Now(),
-        SessionTimeout: sessionTimeout,
-    }
-    
-    group.Members[memberID] = member
-    
-    // Trigger rebalance
-    if group.State == GroupStateStable {
-        group.State = GroupStateRebalancing
-        go gc.rebalanceGroup(groupID)
-    }
-    
-    return nil
-}
+*A single consumer in a consumer group reads from all partitions of a topic. This provides simplicity but limits scalability as all processing is done by one consumer.*
 
-// Rebalance redistributes partitions among group members
-func (gc *GroupCoordinator) rebalanceGroup(groupID string) {
-    gc.mutex.Lock()
-    defer gc.mutex.Unlock()
-    
-    group := gc.groups[groupID]
-    if group.State != GroupStateRebalancing {
-        return
-    }
-    
-    // Get all partitions for subscribed topics
-    var allPartitions []TopicPartition
-    topicSet := make(map[string]bool)
-    
-    for _, member := range group.Members {
-        for _, topic := range member.Topics {
-            topicSet[topic] = true
-        }
-    }
-    
-    for topic := range topicSet {
-        partitions := gc.getTopicPartitions(topic)
-        for _, partition := range partitions {
-            allPartitions = append(allPartitions, TopicPartition{
-                Topic:     topic,
-                Partition: partition,
-            })
-        }
-    }
-    
-    // Assign partitions using round-robin strategy
-    memberIDs := make([]string, 0, len(group.Members))
-    for memberID := range group.Members {
-        memberIDs = append(memberIDs, memberID)
-    }
-    sort.Strings(memberIDs) // Ensure consistent ordering
-    
-    assignment := make(map[string][]TopicPartition)
-    for i, partition := range allPartitions {
-        memberID := memberIDs[i%len(memberIDs)]
-        assignment[memberID] = append(assignment[memberID], partition)
-    }
-    
-    gc.assignments[groupID] = assignment
-    group.State = GroupStateStable
-    group.Generation++
-    
-    log.Printf("Rebalanced group %s with %d members and %d partitions", 
-               groupID, len(group.Members), len(allPartitions))
-}
+```
+Topic: orders (4 partitions)
+Consumer Group: payment-service-group
 
-### Consumer Group Rebalancing Process
+Consumer 1 → partitions [0, 1, 2, 3]  // Reads all partitions
+```
 
-Let's consider a scenario when the group composition changes. In the Kafka cluster, consumer groups are created automatically when consumers connect to the cluster, and there's no need to create them manually, but this is possible through tooling. A new group has no saved offsets for topic partitions and by default they are equal to -1.
+#### **Scenario 2: Multiple Consumers**
+![multiple_consumers_in_one_consumer_group.png](assets/message_queue/multiple_consumers_in_one_consumer_group.png)
 
-When new participants appear in the JoinGroup group, in a special broker process Group Coordinator, the first consumer to enter is assigned the role of Group Leader.
+*Multiple consumers in the same group distribute partitions among themselves. Each partition is assigned to exactly one consumer in the group, enabling parallel processing while ensuring each message is processed only once within the group.*
 
-The group leader is responsible for distributing partitions among all group members. The process of finding the group leader, assigning partitions, stabilizing, and connecting consumers in the group to brokers is called consumer group rebalancing.
+```
+Topic: orders (4 partitions)  
+Consumer Group: payment-service-group
 
-The group rebalancing process by default forces all consumers in the group to stop reading and wait for complete synchronization of participants to acquire new partitions for reading. Kafka has other group rebalancing strategies, including Static membership or Cooperative Incremental Partition Assignor, but this is a topic for a separate article.
+Consumer 1 → partitions [0, 1]
+Consumer 2 → partitions [2, 3]
+```
 
+#### **Scenario 3: More Consumers than Partitions**
+![Additional_consumers_in_a_group_sit_idly.png](assets/message_queue/Additional_consumers_in_a_group_sit_idly.png)
+
+*When there are more consumers in a group than partitions in the topic, some consumers will remain idle. This demonstrates the partition limit - you cannot have more active consumers in a group than partitions.*
+
+```
+Topic: orders (4 partitions)
+Consumer Group: payment-service-group
+
+Consumer 1 → partitions [0]
+Consumer 2 → partitions [1] 
+Consumer 3 → partitions [2]
+Consumer 4 → partitions [3]
+Consumer 5 → partitions []     // IDLE - no available partitions!
+```
+
+#### **Scenario 4: Multiple Groups Reading Same Topic**
+![Multiple_consumers_reading_the_same_records_from_the_topic.png](assets/message_queue/Multiple_consumers_reading_the_same_records_from_the_topic.png)
+
+*Different consumer groups can read the same messages from a topic independently. Each group maintains its own offset tracking, allowing different applications to process the same data stream for different purposes (e.g., one group for analytics, another for notifications).*
+
+## Communication Protocols and Consumer API
+
+### **Available Consumer Protocols**
+
+Kafka supports multiple protocols for consumer communication, each optimized for different use cases:
+
+#### **1. Kafka Native Protocol (Wire Protocol)**
 ```go
-// Rebalancing process implementation
-func (gc *GroupCoordinator) handleRebalance(groupID string, reason RebalanceReason) error {
-    gc.mutex.Lock()
-    defer gc.mutex.Unlock()
-    
-    group := gc.groups[groupID]
-    if group == nil {
-        return fmt.Errorf("group %s not found", groupID)
-    }
-    
-    log.Printf("Starting rebalance for group %s, reason: %v", groupID, reason)
-    
-    // Step 1: Stop the world - pause all consumers
-    group.State = GroupStateRebalancing
-    gc.notifyGroupMembers(groupID, "REBALANCE_START")
-    
-    // Step 2: Wait for all members to acknowledge
-    err := gc.waitForMemberAcknowledgments(groupID, 30*time.Second)
-    if err != nil {
-        return fmt.Errorf("rebalance timeout: %w", err)
-    }
-    
-    // Step 3: Select group leader (first member or existing leader)
-    leader := gc.selectGroupLeader(group)
-    group.Leader = leader.ID
-    
-    // Step 4: Generate new partition assignment
-    assignment := gc.generatePartitionAssignment(group)
-    gc.assignments[groupID] = assignment
-    
-    // Step 5: Notify all members of new assignment
-    for memberID, partitions := range assignment {
-        member := group.Members[memberID]
-        if member != nil {
-            member.Assignment = partitions
-            gc.notifyMemberAssignment(memberID, partitions)
-        }
-    }
-    
-    // Step 6: Group becomes stable
-    group.State = GroupStateStable
-    group.Generation++
-    
-    log.Printf("Rebalance completed for group %s, generation %d", groupID, group.Generation)
-    return nil
-}
-
-type RebalanceReason int
-
-const (
-    MemberJoined RebalanceReason = iota
-    MemberLeft
-    MemberTimedOut
-    TopicMetadataChanged
-    PartitionCountChanged
-)
-
-// Heartbeat management for group coordination
-func (c *Consumer) sendHeartbeats() {
-    ticker := time.NewTicker(c.config.HeartbeatInterval)
-    defer ticker.Stop()
-    
-    for {
-        select {
-        case <-ticker.C:
-            err := c.coordinator.SendHeartbeat(c.groupID, c.memberID)
-            if err != nil {
-                log.Printf("Heartbeat failed: %v", err)
-                // Trigger rejoin process
-                go c.rejoinGroup()
-                return
-            }
-        case <-c.quit:
-            return
-        }
-    }
+// Native Kafka TCP protocol - most efficient
+type KafkaConsumer struct {
+    BootstrapServers []string `yaml:"bootstrap_servers"`
+    Protocol         string   `yaml:"protocol"` // "kafka" 
+    SecurityProtocol string   `yaml:"security_protocol"` // "PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"
 }
 ```
 
-As soon as the group becomes stable, and its members receive partitions, the consumers in it begin reading. Since the group is new and didn't exist before, the consumer chooses the reading position of the offset: from the very beginning earliest or from the end latest. The topic could have existed for several months, and the consumer appeared quite recently. In this case, it's important to decide: whether to read all messages or it's enough to read from the end the most recent ones, skipping the history. The choice between the two options depends on the business logic of events flowing inside the topic.
+**Key Features:**
+- **Binary Protocol**: Custom TCP-based binary protocol for maximum efficiency
+- **Batching**: Messages are fetched in batches for high throughput
+- **Compression**: Supports GZIP, Snappy, LZ4, ZSTD compression
+- **Security**: SSL/TLS encryption and SASL authentication support
 
-If you add a new member to the group, the rebalancing process starts again. The new member, together with the rest of the consumers in the group, will be assigned partitions, and the group leader will try to distribute them among everyone more or less fairly, according to the configurable strategy he chose. Then the group again transitions to a stable state.
-
-To ensure that the Group Coordinator in the Kafka cluster knows which of its members are active and working, and which are no longer, each consumer in the group regularly sends Heartbeat messages at equal intervals. The time value is configured by the consumer program before startup.
-
-The consumer also declares the session lifetime - if during this time it couldn't send any Heartbeat messages to the broker, then it leaves the group. The broker, in turn, not receiving any Heartbeat messages from consumers, starts the process of rebalancing consumers in the group.
-
-The rebalancing process is quite painful for large consumer groups with many topics. It causes Stop-The-World in the entire group with the slightest change in member composition or partition composition in topics. For example, when changing the partition leader in case of broker exit from the cluster due to accident or planned work, Group Coordinator also initiates rebalancing.
-
-Therefore, developers of consumer programs are usually recommended to use one consumer group per topic. It's also useful to keep the number of consumers not too large so as not to trigger rebalancing many times, but also not too small to maintain performance and reliability when reading.
-
-Heartbeat interval and session lifetime values should be set so that the Heartbeat interval is three to four times smaller than session timeout. The values themselves should be chosen not too large so as not to increase the time to detect a "dropped" consumer from the group, but also not too small so that in case of the slightest network problems, the group doesn't go into rebalancing.
-
-Another hypothetical scenario: there are 4 partitions in a topic, and 5 consumers in a group. In this case, the group will be stabilized, but members who don't get any partitions will be idle. This happens because only one consumer in a group can work with one partition, and two or more consumers cannot read from one partition in a group.
-
-This gives rise to the following basic recommendation: set a sufficient number of partitions at the start so that you can horizontally scale your application. Increasing partitions at the moment will bring you almost no result. Already written log messages cannot be moved and distributed between new partitions by Kafka means, and repartitioning on your own always carries risks associated with ordering and idempotency.
-```
-
-### Broker Service
-
-The broker is the core storage and replication engine:
-
+#### **2. HTTP REST API Protocol**
 ```go
-type Broker struct {
-    ID            BrokerID              `json:"id"`
-    Host          string                `json:"host"`
-    Port          int                   `json:"port"`
-    Partitions    map[PartitionKey]*PartitionLog `json:"-"`
-    ReplicationMgr *ReplicationManager   `json:"-"`
-    Storage       StorageEngine         `json:"-"`
-    Config        BrokerConfig          `json:"-"`
-    mutex         sync.RWMutex
+// REST API consumer for web applications
+type RESTConsumer struct {
+    BaseURL          string `yaml:"base_url"`           // "http://kafka-rest:8082"
+    ConsumerInstance string `yaml:"consumer_instance"`  // "my-consumer-instance"
+    Format          string `yaml:"format"`             // "json", "avro", "binary"
 }
 
-type PartitionKey struct {
-    Topic     string `json:"topic"`
-    Partition int32  `json:"partition"`
-}
-
-type PartitionLog struct {
-    Key           PartitionKey    `json:"key"`
-    Segments      []*LogSegment   `json:"segments"`
-    ActiveSegment *LogSegment     `json:"active_segment"`
-    Index         *OffsetIndex    `json:"index"`
-    HighWaterMark int64           `json:"high_water_mark"`
-    LogStartOffset int64          `json:"log_start_offset"`
-    mutex         sync.RWMutex
-}
-
-type LogSegment struct {
-    BaseOffset   int64     `json:"base_offset"`
-    File         *os.File  `json:"-"`
-    Size         int64     `json:"size"`
-    MaxSize      int64     `json:"max_size"`
-    CreatedAt    time.Time `json:"created_at"`
-    MessageCount int       `json:"message_count"`
-}
-
-// Append messages to a partition
-func (b *Broker) Append(key PartitionKey, messages []Message) ([]int64, error) {
-    b.mutex.RLock()
-    partitionLog, exists := b.Partitions[key]
-    b.mutex.RUnlock()
-    
-    if !exists {
-        return nil, fmt.Errorf("partition %s-%d not found", key.Topic, key.Partition)
-    }
-    
-    return partitionLog.Append(messages)
-}
-
-func (pl *PartitionLog) Append(messages []Message) ([]int64, error) {
-    pl.mutex.Lock()
-    defer pl.mutex.Unlock()
-    
-    if pl.ActiveSegment == nil || pl.ActiveSegment.Size >= pl.ActiveSegment.MaxSize {
-        if err := pl.rollSegment(); err != nil {
-            return nil, err
-        }
-    }
-    
-    var offsets []int64
-    for _, msg := range messages {
-        msg.Offset = pl.HighWaterMark
-        msg.Partition = pl.Key.Partition
-        
-        data := serializeMessage(msg)
-        if err := pl.ActiveSegment.Append(data); err != nil {
-            return nil, err
-        }
-        
-        pl.Index.Add(msg.Offset, pl.ActiveSegment.Size)
-        offsets = append(offsets, msg.Offset)
-        pl.HighWaterMark++
-    }
-    
-    return offsets, nil
-}
-
-// Fetch messages from a partition
-func (b *Broker) Fetch(key PartitionKey, offset int64, maxBytes int) ([]Message, error) {
-    b.mutex.RLock()
-    partitionLog, exists := b.Partitions[key]
-    b.mutex.RUnlock()
-    
-    if !exists {
-        return nil, fmt.Errorf("partition %s-%d not found", key.Topic, key.Partition)
-    }
-    
-    return partitionLog.Fetch(offset, maxBytes)
-}
-
-func (pl *PartitionLog) Fetch(startOffset int64, maxBytes int) ([]Message, error) {
-    pl.mutex.RLock()
-    defer pl.mutex.RUnlock()
-    
-    if startOffset < pl.LogStartOffset {
-        return nil, fmt.Errorf("offset %d is before log start offset %d", startOffset, pl.LogStartOffset)
-    }
-    
-    if startOffset >= pl.HighWaterMark {
-        return []Message{}, nil // No new messages
-    }
-    
-    // Find the segment containing the start offset
-    segmentIndex := pl.Index.FindSegment(startOffset)
-    if segmentIndex == -1 {
-        return nil, fmt.Errorf("no segment found for offset %d", startOffset)
-    }
-    
-    var messages []Message
-    bytesRead := 0
-    
-    for i := segmentIndex; i < len(pl.Segments) && bytesRead < maxBytes; i++ {
-        segment := pl.Segments[i]
-        segmentMessages, err := segment.ReadFrom(startOffset)
-        if err != nil {
-            return nil, err
-        }
-        
-        for _, msg := range segmentMessages {
-            if msg.Offset >= startOffset && bytesRead < maxBytes {
-                messages = append(messages, msg)
-                bytesRead += len(msg.Value) + len(msg.Key) + 64 // Approximate message overhead
-                startOffset = msg.Offset + 1
-            }
-        }
-    }
-    
-    return messages, nil
+// REST API request example
+POST /consumers/my-consumer-group
+{
+  "name": "my-consumer-instance",
+  "format": "json",
+  "auto.offset.reset": "earliest"
 }
 ```
+
+**Key Features:**
+- **HTTP-based**: Standard HTTP requests for easy integration
+- **JSON Format**: Human-readable message format
+- **Stateless**: Each request is independent
+- **Web Integration**: Perfect for web applications and microservices
+
+#### **3. gRPC Protocol**
+```go
+// gRPC consumer for microservices
+type GRPCConsumer struct {
+    ServerAddress string `yaml:"server_address"` // "kafka-grpc:9093"
+    TLSEnabled    bool   `yaml:"tls_enabled"`
+    AuthToken     string `yaml:"auth_token"`
+}
+
+// gRPC service definition
+service KafkaConsumerService {
+    rpc Subscribe(SubscribeRequest) returns (stream Message);
+    rpc Commit(CommitRequest) returns (CommitResponse);
+    rpc GetOffsets(GetOffsetsRequest) returns (GetOffsetsResponse);
+}
+```
+
+**Key Features:**
+- **Streaming**: Real-time message streaming with backpressure
+- **Type Safety**: Strong typing with Protocol Buffers
+- **Efficient**: Binary serialization with HTTP/2
+- **Cross-Language**: Works across different programming languages
+
+#### **4. WebSocket Protocol**
+```go
+// WebSocket consumer for real-time web applications
+type WebSocketConsumer struct {
+    URL             string `yaml:"url"`              // "wss://kafka-ws:8080/consume"
+    Topics          []string `yaml:"topics"`
+    GroupID         string `yaml:"group_id"`
+    ReconnectDelay  time.Duration `yaml:"reconnect_delay"`
+}
+
+// WebSocket message format
+{
+  "type": "subscribe",
+  "topics": ["user-events"],
+  "group_id": "web-notifications"
+}
+```
+
+**Key Features:**
+- **Real-time**: Low-latency bidirectional communication
+- **Browser Support**: Native browser WebSocket support
+- **Auto-Reconnect**: Automatic reconnection on connection loss
+- **JSON Messages**: Easy to parse in JavaScript
+
+### **Protocol Comparison**
+
+| Protocol | Throughput | Latency | Complexity | Use Case |
+|----------|------------|---------|------------|----------|
+| **Kafka Native** | Very High | Very Low | Medium | High-throughput applications |
+| **HTTP REST** | Medium | Medium | Low | Web applications, microservices |
+| **gRPC** | High | Low | Medium | Microservices, cross-language |
+| **WebSocket** | Medium | Very Low | Low | Real-time web applications |
+
+## Complete Consumer Connection Flow
+
+The complete consumer connection and message reading process follows this systematic flow:
+
+**Phase 1: Initial Connection & Discovery**
+1. **Bootstrap Connection**: Consumer connects to any available broker from the bootstrap server list
+2. **Cluster Metadata Request**: Sends `MetadataRequest` to discover all brokers, topics, and partition leaders in the cluster
+3. **Local Cache Update**: Consumer updates its local metadata cache with cluster topology information
+
+**Phase 2: Group Coordination & Assignment**
+4. **Group Coordinator Discovery**: Consumer hashes its `group.id` to find which broker serves as the Group Coordinator
+5. **Group Join Protocol**: Sends `JoinGroupRequest` with session timeout, supported assignment strategies, and consumer metadata
+6. **Partition Assignment**: Receives partition assignment from Group Coordinator based on the group's assignment strategy (range, round-robin, etc.)
+7. **Assignment Synchronization**: All group members sync their assignments via `SyncGroupRequest`/`SyncGroupResponse`
+
+**Phase 3: Data Reading Setup**
+8. **Partition Leader Discovery**: For each assigned partition, consumer identifies the current leader broker from metadata
+9. **Offset Position Recovery**: Consumer retrieves committed offsets from `__consumer_offsets` topic to determine starting read position
+10. **Fetch Connection Establishment**: Opens connections to all partition leader brokers
+
+**Phase 4: Message Consumption Loop**
+11. **Fetch Request Cycle**: Consumer sends `FetchRequest` to each partition leader with:
+    - Current offset position
+    - Maximum wait time (500ms default)
+    - Minimum bytes threshold (1KB default)
+    - Maximum bytes per partition (1MB default)
+
+12. **Log Segment Reading**: Broker locates the appropriate log segment, uses index files to find offset position, and reads message batch
+13. **Message Batch Processing**: Consumer deserializes and processes the received message batch
+14. **Offset Management**: Consumer updates local offset tracking and commits progress to `__consumer_offsets`
+15. **Heartbeat Coordination**: Consumer sends periodic heartbeats to Group Coordinator to maintain group membership
+
+**Phase 5: Continuous Operation**
+16. **Rebalance Detection**: Consumer monitors for group membership changes or partition reassignments
+17. **Metadata Refresh**: Periodically refreshes cluster metadata to handle broker failures or topology changes
+18. **Error Handling**: Implements retry logic for temporary failures and failover for permanent broker failures
+
+This flow ensures **reliable, ordered message consumption** while providing **horizontal scalability** through consumer groups and **fault tolerance** through automatic failover and rebalancing mechanisms.

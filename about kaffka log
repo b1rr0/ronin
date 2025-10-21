@@ -1,0 +1,211 @@
+
+
+AI Spotlight: Toggle on and select any text on this page to learn more about it.
+
+Join industry leaders for keynotes, demos, and technical sessions - save your seat at Streamfest 2025.
+
+Get expert answers and live demos—reserve your spot for our upcoming Serverless Office Hours.
+
+CLOUD LOGIN
+Support
+Slack Logo
+11.1K
+Redpanda logo
+Why Redpanda
+Developers
+Pricing
+Start Free
+Improving performance in Apache Kafka
+Kafka logs—Concepts, configurations and policies
+Four factors affecting Kafka performance
+Kafka Burrow partition lag
+Kafka consumer lag
+Kafka monitoring
+Kafka latency
+Kafka optimization
+Kafka performance tuning
+Kafka log compaction
+Kafka rebalancing
+Kafka logs
+Kafka lag
+Kafka monitoring tools
+github icon
+x icon
+facebook icon
+linkedin icon
+email icon
+copy icon
+Kafka logs
+Apache Kafka® is an open-source distributed streaming platform used to build high-performance streaming applications and data integration pipelines. It's highly durable and available, making it the default choice for developing streaming data applications. At its core, Kafka is an immutable log of messages distributed across multiple servers forming a cluster.
+
+This article is about how Kafka log structure facilitates its reliable architecture and parameters related to Kafka logs that affect its performance. Let's start with the key concepts.
+
+Summary of key concepts in Kafka logs
+Kafka’s storage architecture handles data as an ordered log-based structure. Logs are partitioned, and partitions are replicated across multiple brokers to ensure fault tolerance. Developers tweak many parameters related to Kafka logs to balance performance and reliability.
+
+Kafka	Kafka is a distributed and replicated commit log system that relies on messages being appended continuously.
+Kafka partitions	Kafka partitions provide parallelism to the consumers within a topic. Kafka guarantees the ordering of messages at the partition level.
+Kafka topics	Kafka Partitions stores log files in folders named after topics. Each topic folder contains child folders for the partitions of that topic. Kafka log retention parameters affect its durability.
+Kafka partition index files	Each partition folder contains a .index file and .timeindex file. The .index files help Kafka to map messages to offsets. The .timeindex file helps Kafka to map messages to timestamps.
+Kafka segments	Kafka partitions are further divided into segments, one designated as the active segment. Kafka provides configuration parameters to control the time and size based on which segments are closed.
+Understanding Kafka storage architecture
+Kafka’s working model consists of producers, consumers, topics, and a set of brokers deployed as a cluster.
+
+Producers are applications that produce messages.
+Consumers are client applications that fetch messages and apply business logic to them.
+Topics are logical groups of messages that belong to a specific use case.
+Kafka brokers are the machines that arrange transactions between producers and consumers.
+A topic is broken into multiple partitions among one or more Kafka brokers for fault tolerance. The Kafka broker facilitates writing messages to partitions, serving messages, and replicating partitions. Brokers are purposefully kept simple and don’t execute any message-processing logic.
+
+Kafka’s underlying storage architecture consists of log directories on broker instances organized based on topics and partitions. The partition folders contain log files divided into segments for better maintainability and performance. Segments ensure consumers don’t have to read from large partitions.
+
+The contents of the Kafka partition folder are as below.
+
+‍
+
+|── test-topic-0
+   ├── 00000000000000000000.index
+   ├── 00000000000000000000.log
+   ├── 00000000000000000000.timeindex
+   ├── 00000000000000001007.index
+   ├── 00000000000000001007.log
+   ├── 00000000000000001007.snapshot
+   ├── 00000000000000001007.timeindex
+   ├── leader-epoch-checkpoint
+
+‍
+
+When to choose Redpanda over Apache Kafka
+Start streaming data like it's 2024.
+Learn More
+How Kafka logs work
+Kafka designates one segment for a partition as active and writes all subsequent messages to that segment. The position of the message within the partition that must be sent to the consumer in the next read is called an offset. Each log segment has three important files associated with it.
+
+Index maintains the mapping between messages and offset of the partition.
+Timeindex stores the mapping between messages and timestamps.
+Leader-epoch-checkpoint contains details of all previous leaders till then.
+Additionally, the active segment has a snapshot file that stores the producer state information required when a new leader partition is elected. Snapshot file and leader epoch file are used to manage replication. For instance, the replica partitions use them to verify the current leader or elect a new one.
+
+Kafka logs are not kept indefinitely. Kafka closes the log segment when a predetermined size is reached or a time interval has elapsed. Kafka deletes them according to the cleanup policy that is configured. It supports two cleanup policies - Delete and Compact. In the case of the ‘delete’ policy, Kafka deletes messages older than the configured retention time. In the case of the ‘compact’ policy, Kafka deletes all values other than the most recent value.
+
+Configurations for Kafka logs
+You can adjust various log settings to improve Kafka performance.
+
+Log segment configurations
+Engineers tweak segment parameters to optimize performance. The parameters:
+
+log.segment.bytes controls the size of the segment at which Kafka begins a new segment.
+log.roll.ms or log.roll.hours control the time limit, after which Kafka rolls the segment.
+The default value for log.segment.bytes is 1GB. The default value for log.roll.hours is seven days.
+
+Kafka rolls the currently active segment and starts a new segment based on the time or size of the segments. If the producer is slow, you reduce the log.segment.bytes to roll the segments faster. In contrast, increasing the log.segment.bytes values help in accommodating more partitions in the same broker instance. A higher segment size results in a lower number of segment files and thereby stays well within the OS’s open file limitation.
+
+Log retention configurations
+Engineers set retention configuration parameters according to the durability guarantees required for their use cases. The parameters:
+
+log.retention.bytes controls the maximum log size that Kafka retains for a predetermined retention period.
+log.retention.ms, log.retention.minutes or log.retention.hours controls the time up to which Kafka retains messages. The default time is seven days.
+The time-based configuration parameters mentioned here represent the minimum time for Kafka message retention. In many scenarios, Kafka retains the messages for more than the configured time. Since Kafka retention is based on segments and not based on individual messages, the time configurations mentioned here apply to the last record in the segment. The earlier records in the same segment stay for much longer than the retention period, waiting for the segment to be deleted. Even after deletion is confirmed, the actual deletion happens only after a delay specified by the parameter, log.segment.delete.delay.ms.
+
+
+Redpanda: a powerful Kafka alternative
+Fully Kafka API compatible. 6x faster. 100% easier to use.
+Learn More
+Log cleanup policies
+Once the retention period is reached, the cleanup policy comes into the picture. Log cleanup policies determine the criteria for removing data from Kafka commit log to reclaim storage space. The cleanup policies are responsible for managing the retention of messages within individual segments and controlling the deletion process based on certain conditions.
+
+The parameter log.cleanup.policy determines how expired log segments are managed. The allowed values are “delete” by default and “compact.”
+
+It's worth noting that you can set log cleanup policies at the topic level, enabling fine-grained control over data retention strategies. Topics in Kafka can have different cleanup policies based on their specific requirements.
+
+Delete cleanup policy
+This is the default policy in Kafka. Under this policy, segments beyond the retention period defined by the topic's configuration are eligible for deletion. When a log segment expires according to the retention policy, it is marked for deletion, and the corresponding disk space is freed up.
+
+The delete cleanup policy operates based on the segment's maximum timestamp. The entire segment is deleted if all the messages in a segment have a timestamp earlier than the retention threshold(log.retention.ms). This policy ensures that Kafka retains data for a specified duration but removes entire segments efficiently rather than deleting individual messages.
+
+Log retention timeline
+Log retention timeline
+Compact cleanup policy
+The compact cleanup policy aims to preserve the latest state of each key in the log while discarding older versions. Kafka retains the most recent message for each unique key within a segment and removes older versions of the same key. It is beneficial for scenarios where maintaining a compacted history of key-value pairs is essential, such as retaining a changelog or a materialized view.
+
+Log Compaction
+Log Compaction
+Compaction is based on the key of the messages, and messages with the same key are de-duplicated.
+
+Log cleanup configurations
+Developers can control the cleanup behavior using parameters like:
+
+log.cleaner.delete.retention.ms controls how long the records are retained after they are confirmed for deletion.
+log.cleaner.min.compaction.lag.ms defines the minimum age of the records that are subject to compaction.
+log.cleaner.max.compaction.lg.ms defines the maximum age of records that can remain in the system without compaction.
+Setting lower values for the parameters helps trigger compaction in the case of producers with lower speeds.
+
+
+Have questions about Kafka or streaming data?
+Join a global community and chat with the experts on Slack.
+Join Slack
+Conclusion
+Kafka log-based storage structure is the foundation of its reliability and robustness. Kafka stores its log files in folders organized by topics and partitions. The index files help it map messages against offset and timestamps, enabling quick retrieval. The parameters related to segment rolling, log retention, and log compaction help engineers exert granular control over Kafka’s reliability and performance.
+
+
+Redpanda Serverless: from zero to streaming in 5 seconds
+Just sign up, spin up, and start streaming data!
+Free Trial
+Chapters
+Four factors affecting Kafka performance
+Learn how to optimize Kafka performance with producer, consumer, broker, and message configurations.
+Kafka Burrow partition lag
+Learn how to use the Kafka Burrow monitoring tool to monitor Kafka cluster performance, consumer groups, and partition lag.
+Kafka consumer lag
+Learn how to optimize Apache Kafka for maximum performance and scalability with tuning tips and best practices.
+Kafka monitoring
+Learn how to monitor Apache Kafka for performance and behavior with metrics, tools, and best practices.
+Kafka latency
+Learn how to reduce Kafka latency, understand common causes, and explore key performance metrics to optimize real-time applications.
+Kafka optimization
+Learn how to optimize Apache Kafka performance by adjusting partitions and consumer groups, cluster size, producer, and consumer parameters.
+Kafka performance tuning
+Learn how to optimize Apache Kafka® for maximum performance and scalability with tuning tips and best practices.
+Kafka log compaction
+Learn how to optimize Kafka-based systems' stability, efficiency, and longevity with log compaction.
+Kafka rebalancing
+Understand Kafka rebalancing—the process of redistributing partitions among consumers to optimize performance and reduce processing delays.
+Kafka logs
+Learn how Kafka's log structure facilitates its reliable architecture and parameters related to Kafka logs that affect its performance.
+Kafka lag
+Learn how to diagnose and fix Kafka lag to keep your real-time streaming applications running smoothly and efficiently.
+Kafka monitoring tools
+Learn how to monitor Kafka performance metrics and the best monitoring tools to maximize Kakfa performance.
+
+
+///
+Как Kafka хранит сообщения
+Давайте теперь разберёмся, как Kafka хранит сообщения, которые были в неё отправлены.
+
+Каждая па��тиция в Kafka — это не что иное, как журнал (log). Сообщения добавляются в конец, и обычно их не изменяют и не удаляют вручную. Управление жизненным циклом происходит автоматически на основе политик хранения (retention policies)
+
+Лог можно представить как длинный список записей:
+
+  offset | message
+----------------------
+0        |        {...}
+1        |        {...}
+2        |        {...}
+...
+
+Offset в данном случае - это порядковый номер сообщения в партиции.
+
+Kafka хранит эти журналы на диске особым образом: каждая партиция разбита на сегменты (segment files). Эти сегменты имеют некоторый лимит. При его достижении, Kafka создаёт для партиции новый сегмент и пишет туда. Также заполненные сегменты могут быть удалены через некоторое время автоматически. Лимит сегмента и время его жизни зависят от упомянутых выше настроек retention. С ними мы поиграемся в следующей статье.
+
+Также стоит упомянуть о индексах, которые создаются для каждой партиции. Они хранятся рядом с .log файлами.
+
+Бывают 2 вида индексов:
+
+.index — для поиска по offset
+
+.timeIndex — для поиска по времени
+
+Благодаря этим индексам консьюмер может мгновенно перейти к нужному сообщению, не перечитывая весь лог подряд.
+
+За счёт чего несколько консьюмеров могут читать независимо сообщения в одной партиции
+В прошлом пункте мы посмотрели на структуру .log файла. В этом файле был так называемый offset. Консьюмеры просто хранят внутри себя значение offset и по нему получают доступ к нужной им информации. Его, разумеется, можно настроить вручную в настройках консьюмера. Мы это обязательно сделаем в следующий раз.0
