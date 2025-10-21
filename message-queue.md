@@ -1930,8 +1930,8 @@ consumer.connect();
 
 ### **Protocol Comparison**
 
-|Protocol | Throughput | Latency | Complexity | Use Case |
-|---------|------------|---------|------------|----------|
+| Protocol | Throughput | Latency | Complexity | Use Case |
+|----------|------------|---------|------------|----------|
 | **Kafka Native** | Very High | Very Low | Medium | High-throughput applications |
 | **HTTP REST** | Medium | Medium | Low | Web applications, microservices |
 | **gRPC** | High | Low | Medium | Microservices, cross-language |
