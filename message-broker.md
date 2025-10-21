@@ -1,7 +1,7 @@
 ---
 layout: page
-title: Message Queue System
-permalink: /message-queue/
+title: Message Broker Systems
+permalink: /message-broker/
 ---
 
 <style>
@@ -92,7 +92,7 @@ In the world of multi-tier distributed systems, there is a critical need for mes
 
 ### Asynchronous Communication and Service Independence
 
-![2_syn_microservices.png](assets/message_queue/2_syn_microservices.png)
+![2_syn_microservices.png](assets/message_broker/2_syn_microservices.png)
 
 - **Services can operate independently in time**
 - **Senders don't wait for receivers to become available**
@@ -100,11 +100,11 @@ In the world of multi-tier distributed systems, there is a critical need for mes
 
 Instead of making sequential calls to multiple microservices, message queues enable rapid message delivery to several microservices simultaneously. A single message can be published once and consumed by multiple services, dramatically reducing latency and eliminating the complexity of coordinating synchronous calls across distributed systems.
 
-![1_sync_micrpservice_with_5_another_services.png](assets/message_queue/1_sync_micrpservice_with_5_another_services.png)
+![1_sync_micrpservice_with_5_another_services.png](assets/message_broker/1_sync_micrpservice_with_5_another_services.png)
 
 **Instead of complex synchronous interactions between multiple services, we can simplify with a queue:**
 
-![1_write_to_queue_4_read.png](assets/message_queue/1_write_to_queue_4_read.png)
+![1_write_to_queue_4_read.png](assets/message_broker/1_write_to_queue_4_read.png)
 
 **Improved Fault Tolerance:**
 - When a receiver temporarily crashes, messages are stored in the queue and processed later
@@ -129,7 +129,7 @@ Instead of making sequential calls to multiple microservices, message queues ena
 ### Why Not Just Use Simple Programming Language Queues?
 
 You might think: "Why not just use a simple queue from a programming language where first-in-first-out (FIFO) works?" Indeed, we could use basic data structures like queues from standard libraries:
-![queue_as_data_strucure.png](assets/message_queue/queue_as_data_strucure.png)
+![queue_as_data_strucure.png](assets/message_broker/queue_as_data_strucure.png)
 ```go
 type SimpleQueue struct {
     items []Message
@@ -219,7 +219,7 @@ Various message brokers exist, each with different trade-offs:
 
 ### CAP Theorem and Message Brokers
 
-![CAP_theorem.png](assets/message_queue/CAP_theorem.png)
+![CAP_theorem.png](assets/message_broker/CAP_theorem.png)
 
 #### How CAP Theorem Relates to Message Brokers
 
@@ -247,7 +247,7 @@ Message brokers (Kafka, RabbitMQ, NATS, Pulsar, etc.) are distributed systems an
 
 The Kafka cluster consists of brokers. You can think of the system as a data center and servers in it. When first getting acquainted, think of a Kafka broker as a computer: it's a process in the operating system with access to its local disk.
 
-![kaffka_classter_intro.png](assets/message_queue/kaffka_classter_intro.png)
+![kaffka_classter_intro.png](assets/message_broker/kaffka_classter_intro.png)
 
 All brokers are connected to each other by a network and act together, forming a single cluster. When we say that producers write events to a Kafka cluster, we mean that they work with brokers in it.
 
@@ -262,7 +262,7 @@ A topic is a **logical division** of message categories into groups. For example
 The key word here is **logical**. Topics are conceptual containers that organize related messages together. We create topics for events of a common group and try not to mix them with each other. For example, partner coordinates should not be in the same topic as order statuses, and updated order statuses should not be stored mixed with user registration updates.
 
 **Topics are logical splits** - they define what kind of data goes where, but they don't determine how the data is physically stored.
-![send_to_topic.png](assets/message_queue/send_to_topic.png)
+![send_to_topic.png](assets/message_broker/send_to_topic.png)
 It's convenient to think of a topic as a log - you write an event to the end and don't destroy the chain of old events in the process. General logic:
 
 - One producer can write to one or more topics
@@ -278,7 +278,7 @@ computer hardware imposes natural limitations. As operations consume processor r
 Since we cannot increase machine power indefinitely, topic data must be divided into physical parts called partitions. Each topic consists of one or more partitions that
 can be distributed across different brokers. This enables Kafka's horizontal scaling: create a topic, divide it into partitions, and place each partition on separate
 brokers to distribute the workload.
-![topics.png](assets/message_queue/topics.png)
+![topics.png](assets/message_broker/topics.png)
 
 **Key Relationship: Topics ⊃ Partitions**
 - **Topics** = Logical containers (what data category)
@@ -287,7 +287,7 @@ brokers to distribute the workload.
 Formally, a partition is a strictly ordered log of messages stored physically on disk. Each message in it is added to the end without the possibility of changing it in the future and somehow affecting already written messages. At the same time, the topic as a whole has no order, but the order of messages always exists within each individual partition.
 
 **Partition Replication and High Availability**
-![kafka_patrition.png](assets/message_queue/kafka_patrition.png)
+![kafka_patrition.png](assets/message_broker/kafka_patrition.png)
 
 Each partition has one **leader** broker that handles all reads and writes, while **follower replicas** (clones) are maintained on other brokers. If the leader broker fails, one of the followers automatically becomes the new leader, ensuring continuous operation. This replication mechanism provides fault tolerance and prevents data loss.
 #### Key-Based Partitioning and Scaling Limitations
@@ -332,7 +332,7 @@ This means that even with 100 partitions, if all your messages have the same key
 
 
 ### Coordinator Service: Managing the Cluster
-![zookeeper.png](assets/message_queue/zookeeper.png)
+![zookeeper.png](assets/message_broker/zookeeper.png)
 The coordinator acts as the brain of the Kafka cluster, managing metadata, broker orchestration, and service lifecycle. **In a traditional Kafka setup, this role is handled by Zookeeper** (or KRaft in newer versions), which maintains cluster state, broker registry, and topic metadata.
 
 For more details about Kafka-Zookeeper architecture, see: [Kafka Architecture: Kafka Zookeeper](https://www.redpanda.com/guides/kafka-architecture-kafka-zookeeper)
@@ -526,7 +526,7 @@ type MessageHeader struct {
 
 The producer is responsible for publishing messages to topics with intelligent partitioning and batching.
 
-![producer_write_to_partitions.png](assets/message_queue/producer_write_to_partitions.png)
+![producer_write_to_partitions.png](assets/message_broker/producer_write_to_partitions.png)
 #### Metadata Discovery: How Producer Knows Where to Write
 
 Before sending any messages, the producer must discover cluster metadata from the coordinator service (as described in the Coordinator section above):
@@ -869,7 +869,7 @@ func (b *MessageBatcher) Flush() []Message {
 
 ### Delivery Semantics
 
-![delivery_semantics.png](assets/message_queue/delivery_semantics.png)
+![delivery_semantics.png](assets/message_broker/delivery_semantics.png)
 
 Message delivery semantics define the guarantees about message delivery between producers and consumers. Our system supports three different levels of delivery guarantees, each with different performance and reliability trade-offs:
 
@@ -1011,7 +1011,7 @@ Kafka can manage log data in two ways:
 3. **Log compaction**: Keep only the latest value for each key (for topics with keys)
 
 **How Reads and Writes Work:**
-![logs_image.png](assets/message_queue/logs_image.png)
+![logs_image.png](assets/message_broker/logs_image.png)
 
 *Note: The image above shows a simplified "human-readable" example for illustration purposes. In reality, Kafka stores messages in optimized binary format with fixed-size headers, checksums, and compressed payloads for maximum performance and storage efficiency.*
 
@@ -1529,7 +1529,7 @@ This flow ensures durability, ordering, and efficient retrieval while maintainin
 
 A **Consumer** is a client that reads messages from Kafka topics. Consumers retrieve data from one or more partitions and process them at their own pace.
 
-![send_to_topic.png](assets/message_queue/send_to_topic.png)
+![send_to_topic.png](assets/message_broker/send_to_topic.png)
 
 *Basic Kafka architecture showing producers sending messages to topics, which are then consumed by consumers. This illustrates the fundamental data flow where producers write to topics and consumers read from them.*
 
@@ -1573,22 +1573,22 @@ A **Consumer Group** is a group of Consumers with the same `group.id` that **col
 ### Visual Examples
 
 #### Scenario 1: Single Consumer
-![single_in_a_consumer_group.png](assets/message_queue/single_in_a_consumer_group.png)
+![single_in_a_consumer_group.png](assets/message_broker/single_in_a_consumer_group.png)
 
 *A single consumer in a consumer group reads from all partitions of a topic. This provides simplicity but limits scalability as all processing is done by one consumer.*
 
 
 #### Scenario 2: Multiple Consumers
-![Multiple_consumers_in_one_consumer.png](assets/message_queue/Multiple_consumers_in_one_consumer.png)
+![Multiple_consumers_in_one_consumer.png](assets/message_broker/Multiple_consumers_in_one_consumer.png)
 *Multiple consumers in the same group distribute partitions among themselves. Each partition is assigned to exactly one consumer in the group, enabling parallel processing while ensuring each message is processed only once within the group.*
 
 #### Scenario 3: More Consumers than Partitions
-![Additional_consumers_in_a_group_sit_idly.png](assets/message_queue/Additional_consumers_in_a_group_sit_idly.png)
+![Additional_consumers_in_a_group_sit_idly.png](assets/message_broker/Additional_consumers_in_a_group_sit_idly.png)
 
 *When there are more consumers in a group than partitions in the topic, some consumers will remain idle. This demonstrates the partition limit - you cannot have more active consumers in a group than partitions.*
 
 #### Scenario 4: Multiple Groups Reading Same Topic
-![Multiple_consumers_reading_the_same_records_from_the_topic.png](assets/message_queue/Multiple_consumers_reading_the_same_records_from_the_topic.png)
+![Multiple_consumers_reading_the_same_records_from_the_topic.png](assets/message_broker/Multiple_consumers_reading_the_same_records_from_the_topic.png)
 *Different consumer groups can read the same messages from a topic independently. Each group maintains its own offset tracking, allowing different applications to process the same data stream for different purposes (e.g., one group for analytics, another for notifications).*
 
 #### Competing Consumers Pattern (Load Balancing)
@@ -1929,5 +1929,5 @@ consumer.connect();
 - **Bidirectional** - can send acknowledgments and control messages back
 
 ### Protocol Comparison
-![protocol_coparison.png](assets/message_queue/protocol_coparison.png)
+![protocol_coparison.png](assets/message_broker/protocol_coparison.png)
 
