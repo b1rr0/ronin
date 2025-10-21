@@ -987,26 +987,31 @@ Kafka organizes data on disk in a hierarchical structure:
 Each partition is divided into segments. A segment is simply a file on disk containing a portion of the log. When a segment reaches a certain size (default 1GB) or age (default 7 days), it's closed and a new segment is created.
 
 - **Log files (.log)**: Contain the actual message data
+  - Store messages in binary format with headers, keys, values, and metadata
+  - Messages are appended sequentially (append-only log structure)
+  - Each message has a fixed-size header followed by variable-length payload
+  - Optimized for sequential I/O operations for maximum throughput
+  - Cannot be modified once written (immutable log segments)
+
 - **Index files (.index)**: Map offsets to physical positions in log files for fast lookups
+  - Sparse index containing offset-to-position mappings every N messages
+  - Enables O(log n) binary search to find message by offset
+  - Much smaller than log files (only stores position pointers)
+  - Memory-mapped for ultra-fast random access
+  - Essential for consumer seek operations and random offset queries
+
 - **Time index files (.timeindex)**: Map timestamps to offsets for time-based queries
+  - Maps timestamp ranges to their corresponding offset ranges
+  - Enables time-based message retrieval ("give me messages from 2 hours ago")
+  - Supports retention policies based on message age
+  - Used by consumers with timestamp-based seek operations
+  - Critical for log compaction and cleanup operations
 
 **Log Segment Naming Convention:**
 
 The segment files are named with the base offset of the first message in that segment:
 - `00000000000000000000.log` - Contains messages from offset 0
 - `00000000000000012345.log` - Contains messages starting from offset 12,345
-
-**Message Storage Within Segments:**
-
-Each message in a log segment contains:
-
-```
-Message Format:
-┌─────────────┬──────────┬─────────┬──────────┬─────────┬─────────┐
-│   Offset    │   Size   │   CRC   │   Magic  │   Key   │  Value  │
-│   8 bytes   │ 4 bytes  │ 4 bytes │  1 byte  │ N bytes │ M bytes │
-└─────────────┴──────────┴─────────┴──────────┴─────────┴─────────┘
-```
 
 **Log Compaction and Retention:**
 
