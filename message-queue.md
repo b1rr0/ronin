@@ -972,6 +972,11 @@ func (p *Producer) sendWithAcks(messages []Message, ackLevel AckLevel) error {
     return nil
 }
 ```
+
+**For More Detailed Information:**
+
+For a deeper dive into exactly-once semantics and how Apache Kafka implements these delivery guarantees in production, read: [Exactly-once Semantics are Possible: Here's How Apache Kafka Does it](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/)
+
 ## The Log: Foundation of Event Streaming
 
 **TLDR**: A log is an ordered stream of events over time. An event occurs, gets to the end of the log, and remains there unchanged.
