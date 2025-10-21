@@ -916,11 +916,25 @@ func (b *MessageBatcher) Flush() []Message {
 
 Message delivery semantics define the guarantees about message delivery between producers and consumers. Our system supports three different levels of delivery guarantees, each with different performance and reliability trade-offs:
 
-**How Delivery Semantics Work in Our System:**
+**How Each Delivery Semantic Works in Our System:**
 
-In our Kafka-like implementation, delivery semantics are controlled by two key mechanisms:
-1. **Producer acknowledgment levels** - How many replicas must confirm receipt before considering message "sent"
-2. **Consumer commit strategies** - When and how consumers track processed messages
+#### 1. At-Most-Once Delivery
+- **Producer**: Uses `NoAck` - fires messages and doesn't wait for confirmation
+- **Consumer**: Commits offset **before** processing the message
+- **Outcome**: Fast performance, but messages can be lost if consumer crashes after commit but before processing
+- **Use case**: Non-critical data like metrics or logs where occasional loss is acceptable
+
+#### 2. At-Least-Once Delivery
+- **Producer**: Uses `LeaderAck` or `AllAck` - waits for broker confirmation before considering send successful
+- **Consumer**: Commits offset **after** successfully processing the message
+- **Outcome**: No message loss, but duplicates possible if consumer crashes after processing but before commit
+- **Use case**: Most common pattern for business-critical data
+
+#### 3. Exactly-Once Delivery
+- **Producer**: Uses transactional writes with idempotent producers
+- **Consumer**: Uses transactional reads with coordinated commits
+- **Outcome**: Expensive but guarantees no loss and no duplicates
+- **Use case**: Financial transactions, critical business events
 
 **Our Implementation:**
 
@@ -958,59 +972,6 @@ func (p *Producer) sendWithAcks(messages []Message, ackLevel AckLevel) error {
     return nil
 }
 ```
-
-**How Each Delivery Semantic Works in Our System:**
-
-#### 1. At-Most-Once Delivery
-- **Producer**: Uses `NoAck` - fires messages and doesn't wait for confirmation
-- **Consumer**: Commits offset **before** processing the message
-- **Outcome**: Fast performance, but messages can be lost if consumer crashes after commit but before processing
-- **Use case**: Non-critical data like metrics or logs where occasional loss is acceptable
-
-#### 2. At-Least-Once Delivery  
-- **Producer**: Uses `LeaderAck` or `AllAck` - waits for broker confirmation before considering send successful
-- **Consumer**: Commits offset **after** successfully processing the message
-- **Outcome**: No message loss, but duplicates possible if consumer crashes after processing but before commit
-- **Use case**: Most common pattern for business-critical data
-
-#### 3. Exactly-Once Delivery
-- **Producer**: Uses transactional writes with idempotent producers
-- **Consumer**: Uses transactional reads with coordinated commits
-- **Outcome**: Expensive but guarantees no loss and no duplicates
-- **Use case**: Financial transactions, critical business events
-
-**Real-World Trade-offs in Our Implementation:**
-
-```go
-// Configuration for different use cases
-type ProducerConfig struct {
-    AckLevel        AckLevel
-    RetryAttempts   int
-    IdempotentSend  bool
-    TransactionID   string
-}
-
-// High-throughput, loss-tolerant (metrics, logs)
-var MetricsConfig = ProducerConfig{
-    AckLevel: NoAck,
-    RetryAttempts: 0,
-}
-
-// Balanced approach (business events)
-var BusinessConfig = ProducerConfig{
-    AckLevel: LeaderAck,
-    RetryAttempts: 3,
-}
-
-// Mission-critical (financial data)
-var FinancialConfig = ProducerConfig{
-    AckLevel: AllAck,
-    RetryAttempts: 5,
-    IdempotentSend: true,
-    TransactionID: "financial-tx",
-}
-```
-
 ## The Log: Foundation of Event Streaming
 
 **TLDR**: A log is an ordered stream of events over time. An event occurs, gets to the end of the log, and remains there unchanged.
