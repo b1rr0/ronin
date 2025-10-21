@@ -1525,60 +1525,6 @@ This flow ensures durability, ordering, and efficient retrieval while maintainin
 
 **Further Reading**: For more detailed information about Kafka log performance and internals, see [Kafka Performance: Kafka Logs](https://www.redpanda.com/guides/kafka-performance-kafka-logs).
 
-### Consumer Service: Reading Messages from Topics
-
-## Communication Protocols and Connection Flow
-
-### **Kafka Wire Protocol - TCP-based Binary Communication**
-
-All Kafka client-broker communication uses a **custom binary protocol over TCP**. This protocol is optimized for high throughput and low latency.
-
-**Protocol Stack:**
-```
-Application Layer:    Kafka API Requests (Fetch, Produce, Metadata, etc.)
-Transport Layer:      TCP (reliable, ordered delivery)
-Network Layer:        IP
-```
-
-
-
-The complete consumer connection and message reading process follows this systematic flow:
-
-**Phase 1: Initial Connection & Discovery**
-1. **Bootstrap Connection**: Consumer connects to any available broker from the bootstrap server list
-2. **Cluster Metadata Request**: Sends `MetadataRequest` to discover all brokers, topics, and partition leaders in the cluster
-3. **Local Cache Update**: Consumer updates its local metadata cache with cluster topology information
-
-**Phase 2: Group Coordination & Assignment**
-4. **Group Coordinator Discovery**: Consumer hashes its `group.id` to find which broker serves as the Group Coordinator
-5. **Group Join Protocol**: Sends `JoinGroupRequest` with session timeout, supported assignment strategies, and consumer metadata
-6. **Partition Assignment**: Receives partition assignment from Group Coordinator based on the group's assignment strategy (range, round-robin, etc.)
-7. **Assignment Synchronization**: All group members sync their assignments via `SyncGroupRequest`/`SyncGroupResponse`
-
-**Phase 3: Data Reading Setup**
-8. **Partition Leader Discovery**: For each assigned partition, consumer identifies the current leader broker from metadata
-9. **Offset Position Recovery**: Consumer retrieves committed offsets from `__consumer_offsets` topic to determine starting read position
-10. **Fetch Connection Establishment**: Opens connections to all partition leader brokers
-
-**Phase 4: Message Consumption Loop**
-11. **Fetch Request Cycle**: Consumer sends `FetchRequest` to each partition leader with:
-    - Current offset position
-    - Maximum wait time (500ms default)
-    - Minimum bytes threshold (1KB default)
-    - Maximum bytes per partition (1MB default)
-
-12. **Log Segment Reading**: Broker locates the appropriate log segment, uses index files to find offset position, and reads message batch
-13. **Message Batch Processing**: Consumer deserializes and processes the received message batch
-14. **Offset Management**: Consumer updates local offset tracking and commits progress to `__consumer_offsets`
-15. **Heartbeat Coordination**: Consumer sends periodic heartbeats to Group Coordinator to maintain group membership
-
-**Phase 5: Continuous Operation**
-16. **Rebalance Detection**: Consumer monitors for group membership changes or partition reassignments
-17. **Metadata Refresh**: Periodically refreshes cluster metadata to handle broker failures or topology changes
-18. **Error Handling**: Implements retry logic for temporary failures and failover for permanent broker failures
-
-This flow ensures **reliable, ordered message consumption** while providing **horizontal scalability** through consumer groups and **fault tolerance** through automatic failover and rebalancing mechanisms.
-
 ## What is a Consumer
 
 A **Consumer** is a client that reads messages from Kafka topics. Consumers retrieve data from one or more partitions and process them at their own pace.
@@ -1624,25 +1570,6 @@ A **Consumer Group** is a group of Consumers with the same `group.id` that **col
 3. **Automatic partition distribution**
 4. **Shared offset tracking**
 
-```go
-type ConsumerGroup struct {
-    ID           string                    `json:"id"`          // "payment-service-group"
-    Members      map[string]*GroupMember   `json:"members"`     // List of Consumers
-    Leader       string                    `json:"leader"`      // Group leader
-    State        GroupState                `json:"state"`       // Group state
-    Generation   int32                     `json:"generation"`  // Generation (after rebalance)
-}
-
-type GroupMember struct {
-    ID             string           `json:"id"`             // Consumer ID
-    Host           string           `json:"host"`           // Consumer host
-    Topics         []string         `json:"topics"`         // Subscribed topics
-    Assignment     []TopicPartition `json:"assignment"`     // Assigned partitions
-    LastHeartbeat  time.Time        `json:"last_heartbeat"` // Last heartbeat
-    SessionTimeout time.Duration    `json:"session_timeout"`// Session timeout
-}
-```
-
 ### **Consumer Group Examples with Visual Diagrams:**
 
 #### **Scenario 1: Single Consumer**
@@ -1650,193 +1577,35 @@ type GroupMember struct {
 
 *A single consumer in a consumer group reads from all partitions of a topic. This provides simplicity but limits scalability as all processing is done by one consumer.*
 
-```
-Topic: orders (4 partitions)
-Consumer Group: payment-service-group
-
-Consumer 1 → partitions [0, 1, 2, 3]  // Reads all partitions
-```
 
 #### **Scenario 2: Multiple Consumers**
-![multiple_consumers_in_one_consumer_group.png](assets/message_queue/multiple_consumers_in_one_consumer_group.png)
-
+![Multiple_consumers_in_one_consumer.png](assets/message_queue/Multiple_consumers_in_one_consumer.png)
 *Multiple consumers in the same group distribute partitions among themselves. Each partition is assigned to exactly one consumer in the group, enabling parallel processing while ensuring each message is processed only once within the group.*
-
-```
-Topic: orders (4 partitions)  
-Consumer Group: payment-service-group
-
-Consumer 1 → partitions [0, 1]
-Consumer 2 → partitions [2, 3]
-```
 
 #### **Scenario 3: More Consumers than Partitions**
 ![Additional_consumers_in_a_group_sit_idly.png](assets/message_queue/Additional_consumers_in_a_group_sit_idly.png)
 
 *When there are more consumers in a group than partitions in the topic, some consumers will remain idle. This demonstrates the partition limit - you cannot have more active consumers in a group than partitions.*
 
-```
-Topic: orders (4 partitions)
-Consumer Group: payment-service-group
-
-Consumer 1 → partitions [0]
-Consumer 2 → partitions [1] 
-Consumer 3 → partitions [2]
-Consumer 4 → partitions [3]
-Consumer 5 → partitions []     // IDLE - no available partitions!
-```
-
 #### **Scenario 4: Multiple Groups Reading Same Topic**
 ![Multiple_consumers_reading_the_same_records_from_the_topic.png](assets/message_queue/Multiple_consumers_reading_the_same_records_from_the_topic.png)
 *Different consumer groups can read the same messages from a topic independently. Each group maintains its own offset tracking, allowing different applications to process the same data stream for different purposes (e.g., one group for analytics, another for notifications).*
 
-### **Consumer Groups in Distributed Systems**
+#### **Competing Consumers Pattern (Load Balancing)**
+When you want to **distribute workload** across multiple consumer instances, all consumers use the **same group ID**. Kafka ensures each message is delivered to only one consumer in the group. For example, if you have an order processing service with multiple instances, each order will be processed by exactly one instance, enabling horizontal scaling.
 
-Consumer Groups are fundamental to building **scalable, fault-tolerant distributed systems** with Kafka. They enable two critical messaging patterns:
-
-#### **1. Competing Consumers Pattern (Load Balancing)**
-When you want to **distribute workload** across multiple consumer instances:
-
-```go
-// Example: Order Processing Service
-// Multiple instances process orders in parallel
-func main() {
-    consumer := kafka.NewConsumer(kafka.ConfigMap{
-        "bootstrap.servers": "localhost:9092",
-        "group.id":          "order-processing-service", // Same group ID
-        "auto.offset.reset": "earliest",
-    })
-    
-    consumer.Subscribe([]string{"orders"}, nil)
-    
-    for {
-        msg, err := consumer.ReadMessage(-1)
-        if err == nil {
-            processOrder(msg.Value) // Each message processed by only ONE instance
-            consumer.CommitMessage(msg)
-        }
-    }
-}
-```
-
-**Result**: Each order is processed by **exactly one** instance, enabling horizontal scaling.
-
-#### **2. Publish-Subscribe Pattern (Broadcasting)**
-When you want **multiple applications** to process the same data:
-
-```go
-// Analytics Service - Group 1
-consumer1 := kafka.NewConsumer(kafka.ConfigMap{
-    "group.id": "analytics-service", // Different group ID
-})
-
-// Notification Service - Group 2
-consumer2 := kafka.NewConsumer(kafka.ConfigMap{
-    "group.id": "notification-service", // Different group ID
-})
-
-// Audit Service - Group 3
-consumer3 := kafka.NewConsumer(kafka.ConfigMap{
-    "group.id": "audit-service", // Different group ID
-})
-
-// All three services receive ALL messages from the same topic
-```
-
-**Result**: Each service receives **every message**, enabling multiple data processing pipelines.
-
-### **Real-World Example: E-commerce Platform**
-
-```go
-// Topic: "user-events" 
-// Contains: user registrations, logins, purchases, etc.
-
-// Group 1: Real-time Notifications
-type NotificationService struct {
-    groupID = "notification-service"
-    topics  = ["user-events"]
-}
-
-func (ns *NotificationService) processMessage(event UserEvent) {
-    switch event.Type {
-    case "purchase":
-        sendPurchaseConfirmationEmail(event.UserID, event.Data)
-    case "registration":
-        sendWelcomeEmail(event.UserID)
-    }
-}
-
-// Group 2: Analytics Pipeline
-type AnalyticsService struct {
-    groupID = "analytics-service" 
-    topics  = ["user-events"]
-}
-
-func (as *AnalyticsService) processMessage(event UserEvent) {
-    // Send to data warehouse for reporting
-    dataWarehouse.Store(event)
-    
-    // Update real-time metrics
-    metrics.UpdateUserActivity(event.UserID, event.Type)
-}
-
-// Group 3: Fraud Detection
-type FraudDetectionService struct {
-    groupID = "fraud-detection-service"
-    topics  = ["user-events"]
-}
-
-func (fds *FraudDetectionService) processMessage(event UserEvent) {
-    if event.Type == "purchase" {
-        riskScore := calculateRiskScore(event)
-        if riskScore > THRESHOLD {
-            flagSuspiciousActivity(event)
-        }
-    }
-}
-```
-
-### **Consumer Group Coordinator and Partition Assignment**
-
-The **Group Coordinator** (a designated broker) manages consumer group membership and partition assignments:
-
-```go
-type GroupCoordinatorManager struct {
-    // Coordinator election: hash(group_id) % num_brokers
-    coordinators map[string]*BrokerInfo // group_id -> coordinator broker
-    
-    // Rebalance triggers
-    rebalanceReasons []RebalanceReason
-}
-
-// Partition assignment strategies available:
-const (
-    RangeAssignor     = "range"      // Assign consecutive partitions
-    RoundRobinAssignor = "roundrobin" // Distribute partitions evenly  
-    StickyAssignor    = "sticky"     // Minimize partition movement
-    CooperativeSticky = "cooperative-sticky" // Incremental rebalancing
-)
-```
+#### **Publish-Subscribe Pattern (Broadcasting)**
+When you want **multiple applications** to process the same data, each application uses a **different group ID**. This allows multiple services (analytics, notifications, audit) to all receive every message from the same topic, enabling multiple independent data processing pipelines.
 
 ### **Group States and Lifecycle**
+Consumer groups transition through these states:
+- **Empty**: No active members
+- **PreparingRebalance**: Rebalance initiated when members join/leave
+- **CompletingRebalance**: Partition assignment in progress
+- **Stable**: Normal operation with fixed assignments
+- **Dead**: Group deleted
 
-```go
-type GroupState string
-
-const (
-    GroupStateEmpty       GroupState = "Empty"       // No members
-    GroupStatePreparingRebalance   = "PreparingRebalance" // Rebalance initiated
-    GroupStateCompletingRebalance  = "CompletingRebalance" // Assignment in progress
-    GroupStateStable      GroupState = "Stable"      // Normal operation
-    GroupStateDead        GroupState = "Dead"        // Group deleted
-)
-
-// Group lifecycle transitions:
-// Empty -> PreparingRebalance -> CompletingRebalance -> Stable
-//   ^                                                     |
-//   +-----------------------------------------------------+
-//                    (member leaves/joins)
-```
+Groups continuously cycle between Stable and rebalancing states as membership changes.
 
 ### **Key Benefits of Consumer Groups**
 
@@ -1846,38 +1615,64 @@ const (
 4. **Flexible Processing**: Multiple applications can process the same data independently
 5. **Automatic Recovery**: Failed consumers automatically rejoin and resume processing
 
-### **Best Practices for Consumer Groups**
+## Complete Consumer Connection Flow
 
-```go
-type ConsumerGroupConfig struct {
-    // Naming convention: service-name-environment
-    GroupID string `yaml:"group_id"` // e.g., "order-service-prod"
-    
-    // Session management
-    SessionTimeoutMs  int `yaml:"session_timeout_ms"`  // 45000 (45s)
-    HeartbeatIntervalMs int `yaml:"heartbeat_interval_ms"` // 15000 (15s)
-    
-    // Processing configuration  
-    MaxPollRecords     int `yaml:"max_poll_records"`      // 100-500
-    MaxPollIntervalMs  int `yaml:"max_poll_interval_ms"`  // 300000 (5min)
-    
-    // Offset management
-    EnableAutoCommit   bool `yaml:"enable_auto_commit"`    // false (manual commit)
-    AutoCommitIntervalMs int `yaml:"auto_commit_interval_ms"` // 5000 (5s)
-}
+Here's how a consumer connects and starts reading messages:
+
+### **📡 Phase 1: Discovery & Connection**
+1. **Connect to any broker** from bootstrap server list
+2. **Request cluster info** → get all brokers, topics, partition leaders  
+3. **Cache metadata** locally for fast lookups
+
+### **👥 Phase 2: Join Consumer Group**
+4. **Find Group Coordinator** using hash(group_id) % brokers
+5. **Join group** → send session timeout + assignment preferences
+6. **Get partition assignment** from coordinator (range/round-robin/sticky)
+7. **Sync with other consumers** in the group
+
+### **🔗 Phase 3: Setup Reading**
+8. **Find partition leaders** for assigned partitions
+9. **Get current offsets** from `__consumer_offsets` topic
+10. **Open connections** to partition leader brokers
+
+### **🔄 Phase 4: Reading Loop**
+11. **Send fetch requests** to leaders (offset, wait time, batch size)
+12. **Broker reads logs** using segment files and indexes  
+13. **Process message batches** received from brokers
+14. **Commit offsets** to track progress
+15. **Send heartbeats** to stay in the group
+
+### **⚙️ Phase 5: Maintenance**
+16. **Monitor rebalancing** when consumers join/leave
+17. **Refresh metadata** when brokers fail/recover
+18. **Handle errors** with retries and failover
+
+This process ensures **reliable message delivery**, **horizontal scaling** through groups, and **fault tolerance** through automatic recovery.
+
+## Protocols
+
+### **Kafka Wire Protocol Foundation**
+
+All Kafka client-broker communication uses a **custom binary protocol over TCP**. This protocol is optimized for high throughput and low latency.
+
+**Protocol Stack:**
+```
+Application Layer:    Kafka API Requests (Fetch, Produce, Metadata, etc.)
+Transport Layer:      TCP (reliable, ordered delivery)
+Network Layer:        IP
 ```
 
-**Guidelines:**
-- **One group per service/application** to avoid interference
-- **Partition count ≥ max expected consumers** for optimal scaling
-- **Monitor consumer lag** to detect processing bottlenecks
-- **Use manual offset commits** for exactly-once processing guarantees
+**Key Features of Kafka Wire Protocol:**
+- **Binary Format**: Compact binary encoding for efficiency
+- **Request-Response Model**: Synchronous communication with correlation IDs
+- **Batching Support**: Multiple messages per request for high throughput
+- **Compression**: Built-in support for GZIP, Snappy, LZ4, ZSTD
+- **API Versioning**: Backward/forward compatibility through API versions
+- **Connection Pooling**: Persistent connections for reduced overhead
 
-## Communication Protocols and Consumer API
+### **Consumer and Producer Protocols**
 
-### **Available Consumer Protocols**
-
-Kafka supports multiple protocols for consumer communication, each optimized for different use cases:
+Kafka supports multiple protocols for both consumer and producer communication, each optimized for different use cases:
 
 #### **1. Kafka Native Protocol (Wire Protocol)**
 ```go
@@ -1975,41 +1770,3 @@ type WebSocketConsumer struct {
 | **gRPC** | High | Low | Medium | Microservices, cross-language |
 | **WebSocket** | Medium | Very Low | Low | Real-time web applications |
 
-## Complete Consumer Connection Flow
-
-The complete consumer connection and message reading process follows this systematic flow:
-
-**Phase 1: Initial Connection & Discovery**
-1. **Bootstrap Connection**: Consumer connects to any available broker from the bootstrap server list
-2. **Cluster Metadata Request**: Sends `MetadataRequest` to discover all brokers, topics, and partition leaders in the cluster
-3. **Local Cache Update**: Consumer updates its local metadata cache with cluster topology information
-
-**Phase 2: Group Coordination & Assignment**
-4. **Group Coordinator Discovery**: Consumer hashes its `group.id` to find which broker serves as the Group Coordinator
-5. **Group Join Protocol**: Sends `JoinGroupRequest` with session timeout, supported assignment strategies, and consumer metadata
-6. **Partition Assignment**: Receives partition assignment from Group Coordinator based on the group's assignment strategy (range, round-robin, etc.)
-7. **Assignment Synchronization**: All group members sync their assignments via `SyncGroupRequest`/`SyncGroupResponse`
-
-**Phase 3: Data Reading Setup**
-8. **Partition Leader Discovery**: For each assigned partition, consumer identifies the current leader broker from metadata
-9. **Offset Position Recovery**: Consumer retrieves committed offsets from `__consumer_offsets` topic to determine starting read position
-10. **Fetch Connection Establishment**: Opens connections to all partition leader brokers
-
-**Phase 4: Message Consumption Loop**
-11. **Fetch Request Cycle**: Consumer sends `FetchRequest` to each partition leader with:
-    - Current offset position
-    - Maximum wait time (500ms default)
-    - Minimum bytes threshold (1KB default)
-    - Maximum bytes per partition (1MB default)
-
-12. **Log Segment Reading**: Broker locates the appropriate log segment, uses index files to find offset position, and reads message batch
-13. **Message Batch Processing**: Consumer deserializes and processes the received message batch
-14. **Offset Management**: Consumer updates local offset tracking and commits progress to `__consumer_offsets`
-15. **Heartbeat Coordination**: Consumer sends periodic heartbeats to Group Coordinator to maintain group membership
-
-**Phase 5: Continuous Operation**
-16. **Rebalance Detection**: Consumer monitors for group membership changes or partition reassignments
-17. **Metadata Refresh**: Periodically refreshes cluster metadata to handle broker failures or topology changes
-18. **Error Handling**: Implements retry logic for temporary failures and failover for permanent broker failures
-
-This flow ensures **reliable, ordered message consumption** while providing **horizontal scalability** through consumer groups and **fault tolerance** through automatic failover and rebalancing mechanisms.
