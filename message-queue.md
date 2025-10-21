@@ -243,19 +243,9 @@ Message brokers (Kafka, RabbitMQ, NATS, Pulsar, etc.) are distributed systems an
 - Usually balances between AP and CP, depending on configuration
 - Can choose priority (availability or strict consistency) based on use case
 
-/// Introduction completed, now the main part with code examples:
+## Let's Look Inside: How Apache Kafka Works
 
-## How Apache Kafka Works
-
-### Background: From Objects to Events
-
-For a long time, engineers developed programs that operate on real-world objects and save state about them in databases. These could be users, orders, or products. The representation of real-world things as objects is widespread in the OOP paradigm and development in general. But more and more modern companies operate not on the objects themselves, but on the events they generate.
-
-Companies strive to reduce tight coupling between services and improve application resilience to failures by isolating data providers and their consumers. This request, together with the popularity of microservice architecture, popularizes the event-oriented approach.
-
-Events in systems can be stored in traditional relational databases just like objects. But doing so is cumbersome and inefficient. Instead, we use a structure called a log, which we'll discuss later.
-
-## System Architecture
+## Kafka's Internal Architecture by Example
 
 ### Brokers: The Foundation
 
@@ -836,7 +826,24 @@ func (p *Producer) getMetadataWithCache(topic string) (*TopicMetadata, error) {
 
 ### Message Batching System
 
-Batching is crucial for throughput optimization:
+Batching is one of the most critical optimizations in Kafka's architecture. Instead of sending each message individually (which would create enormous network overhead), producers collect multiple messages into batches before transmission.
+
+**Why Batching is Essential:**
+
+Modern applications can generate thousands of messages per second. Without batching, each message would require a separate network round-trip, overwhelming both the network and the broker with connection overhead. A single network request can have 1-2ms latency, so sending 1000 individual messages would take 1-2 seconds just in network overhead!
+
+**The Batching Trade-off:**
+
+Batching creates a fundamental trade-off between **latency** and **throughput**:
+- **Higher batch sizes** = Better throughput, but higher latency (messages wait longer)
+- **Smaller batch sizes** = Lower latency, but reduced throughput
+- **Linger time** = How long to wait for a batch to fill up before sending
+
+**Real-World Impact:**
+- **Without batching**: 1,000 messages = 1,000 network requests = ~1-2 seconds
+- **With batching**: 1,000 messages = 10 batches = ~10-20ms + processing time
+
+**Our Implementation:**
 
 ```go
 type MessageBatcher struct {
@@ -1053,6 +1060,9 @@ Kafka can manage log data in two ways:
 
 **How Reads and Writes Work:**
 ![logs_image.png](assets/message_queue/logs_image.png)
+
+*Note: The image above shows a simplified "human-readable" example for illustration purposes. In reality, Kafka stores messages in optimized binary format with fixed-size headers, checksums, and compressed payloads for maximum performance and storage efficiency.*
+
 **Writing (Appending):**
 - New messages are always appended to the active segment (latest .log file)
 - Write operations are sequential, making them very fast
