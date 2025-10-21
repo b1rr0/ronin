@@ -993,18 +993,18 @@ Kafka organizes data on disk in a hierarchical structure:
 
 ```
 /kafka-logs/
-├── topic-name-0/          # Partition 0 of "topic-name"
+├── topic-name-partition-0/         # Partition 0 of "topic-name"
 │   ├── 00000000000000000000.log    # Segment file (data)
 │   ├── 00000000000000000000.index  # Offset index
 │   ├── 00000000000000000000.timeindex # Time index
 │   ├── 00000000000000012345.log    # Next segment file
 │   ├── 00000000000000012345.index  # Next offset index
 │   └── leader-epoch-checkpoint     # Leader epoch data
-├── topic-name-1/          # Partition 1 of "topic-name"
+├── topic-name-partition-1/          # Partition 1 of "topic-name"
 │   ├── 00000000000000000000.log
 │   ├── 00000000000000000000.index
 │   └── ...
-├── another-topic-0/       # Different topic, partition 0
+├── another-topic-partition-0/       # Different topic, partition 0
 │   ├── 00000000000000000000.log
 │   └── ...
 └── __consumer_offsets-0/  # Internal Kafka topic for offset storage
@@ -1052,11 +1052,15 @@ Kafka can manage log data in two ways:
 3. **Log compaction**: Keep only the latest value for each key (for topics with keys)
 
 **How Reads and Writes Work:**
-
+![logs_image.png](assets/message_queue/logs_image.png)
 **Writing (Appending):**
 - New messages are always appended to the active segment (latest .log file)
 - Write operations are sequential, making them very fast
 - Each message gets assigned the next available offset
+- **Simultaneously updates multiple files:**
+  - **Log file (.log)**: Appends the actual message data in binary format
+  - **Index file (.index)**: Adds offset-to-position mapping every ~4KB of data
+  - **Time index (.timeindex)**: Records timestamp-to-offset mapping for time-based queries
 
 **Reading:**
 - Consumers specify an offset to start reading from
@@ -1094,55 +1098,70 @@ func (s *LogSegment) Append(message []byte) (offset int64, err error) {
 }
 ```
 
-**Benefits of This Log Structure:**
+**Real-World Example: 10 Log Segments**
 
-1. **Sequential I/O**: All writes are appends, which are much faster than random writes
-2. **Immutability**: Once written, messages never change, simplifying concurrent access
-3. **Efficient Storage**: Index files allow fast random access without loading entire log
-4. **Scalability**: Each partition can be on different disks/servers
-5. **Fault Tolerance**: Segments can be replicated across multiple brokers
-
-**Example: Reading Messages by Offset**
-
-When a consumer requests messages starting from offset 15,000:
-
-1. Kafka looks at segment files: `00000000000000012345.log` contains this offset
-2. Uses `00000000000000012345.index` to find physical position in the log file
-3. Reads sequentially from that position
-4. Returns batch of messages to consumer
-
-This log-centric design is what makes Kafka incredibly fast and scalable, capable of handling millions of messages per second while providing strong durability guarantees.
-
-### Internal File Structure Details
-
-Now let's dive deeper into how each file type stores data internally:
-
-#### 1. Log Files (.log) - Message Data Storage
-
-The .log files contain the actual message data in a binary format. Each message is stored with the following structure:
+Here's how a busy topic with 10 segments would look on disk:
 
 ```
-Message Record Format:
-┌─────────────┬──────────────┬─────────────┬──────────────┬─────────────┬─────────────┐
-│   Offset    │  Message     │   CRC32     │  Magic Byte  │  Attributes │  Timestamp  │
-│   8 bytes   │  Size        │   4 bytes   │   1 byte     │   1 byte    │   8 bytes   │
-│   (int64)   │  4 bytes     │             │              │             │             │
-└─────────────┼──────────────┼─────────────┼──────────────┼─────────────┼─────────────┤
-│  Key Length │  Key Data    │ Value Length│  Value Data  │   Headers   │             │
-│   4 bytes   │  N bytes     │   4 bytes   │   M bytes    │  Variable   │             │
-│   (int32)   │              │   (int32)   │              │             │             │
-└─────────────┴──────────────┴─────────────┴──────────────┴─────────────┴─────────────┘
+/kafka-logs/topic-orders-partition-0/
+# Log files (.log) - contain actual message data
+├── 00000000000000000000.log      # Messages 0-9,999
+├── 00000000000000010000.log      # Messages 10,000-19,999
+├── 00000000000000020000.log      # Messages 20,000-29,999
+├── 00000000000000030000.log      # Messages 30,000-39,999
+├── 00000000000000040000.log      # Messages 40,000-49,999
+├── 00000000000000050000.log      # Messages 50,000-59,999
+├── 00000000000000060000.log      # Messages 60,000-69,999
+├── 00000000000000070000.log      # Messages 70,000-79,999
+├── 00000000000000080000.log      # Messages 80,000-89,999
+├── 00000000000000090000.log      # Messages 90,000-99,999 (active segment)
+#
+# Index files (.index) - map offsets to positions in log files
+├── 00000000000000000000.index    # Index for segment 0
+├── 00000000000000010000.index    # Index for segment 1
+├── 00000000000000020000.index    # Index for segment 2
+├── 00000000000000030000.index    # Index for segment 3
+├── 00000000000000040000.index    # Index for segment 4
+├── 00000000000000050000.index    # Index for segment 5
+├── 00000000000000060000.index    # Index for segment 6
+├── 00000000000000070000.index    # Index for segment 7
+├── 00000000000000080000.index    # Index for segment 8
+└── 00000000000000090000.index    # Index for segment 9 (active)
 ```
 
-**Log File Components:**
-- **Offset**: Unique monotonic identifier for the message within partition
-- **Message Size**: Total size of the message record in bytes
-- **CRC32**: Checksum for data integrity verification
-- **Magic Byte**: Protocol version identifier (v0, v1, v2)
-- **Attributes**: Compression type, timestamp type flags
-- **Timestamp**: Message timestamp (producer or broker time)
-- **Key/Value**: Actual message payload
+**Reading Process Example:**
 
+**How Reading by Offset Works:**
+
+**Step 1: Find Correct Segment (Binary Search)**
+- Kafka maintains sorted list of segment base offsets: [0, 10000, 20000, 30000, ...]
+- For target offset 65,432: Binary search finds segment starting at 60,000
+- Load corresponding files: `00000000000000060000.log` and `00000000000000060000.index`
+
+**Step 2: Find Position in Segment (Binary Search)**
+- Use sparse index to locate approximate position
+- Index entries: [(60000→0), (64000→4096), (68000→8192)]
+- For offset 65,432: Binary search finds entry (64000→4096)
+- Start reading from byte position 4096 in log file
+
+**Step 3: Sequential Scan to Exact Offset**
+- Read messages sequentially from position 4096
+- Check each message offset until reaching 65,432
+- Return batch of messages starting from that exact offset
+
+**How Reading by Timestamp Works:**
+
+**Step 1: Find Time Range (Binary Search)**
+- Use time index to map timestamp to offset range
+- Time entries: [(timestamp1→offset1), (timestamp2→offset2)]
+- Binary search finds closest timestamp ≤ target timestamp
+
+**Step 2: Convert to Offset-Based Search**
+- Get offset from time index result
+- Switch to standard offset-based lookup process
+- Continue with binary search through segments and positions
+
+**1. Log File Format Implementation:**
 ```go
 type LogFileEntry struct {
     Offset      int64             // 8 bytes
@@ -1159,24 +1178,18 @@ type LogFileEntry struct {
 }
 
 func (l *LogFile) writeMessage(msg *Message) (int64, error) {
-    // Calculate total message size
-    messageSize := 26 + len(msg.Key) + len(msg.Value) // Fixed headers + payload
+    messageSize := 26 + len(msg.Key) + len(msg.Value)
+    buffer := make([]byte, 0, messageSize+12)
     
-    // Write message to log file
-    buffer := make([]byte, 0, messageSize+12) // +12 for offset and size headers
-    
-    // Write offset and message size
     binary.BigEndian.PutUint64(buffer[0:8], uint64(msg.Offset))
     binary.BigEndian.PutUint32(buffer[8:12], uint32(messageSize))
     
-    // Write message data
     pos := 12
     binary.BigEndian.PutUint32(buffer[pos:pos+4], msg.CRC32)
     buffer[pos+4] = msg.Magic
     buffer[pos+5] = msg.Attributes
     binary.BigEndian.PutUint64(buffer[pos+6:pos+14], uint64(msg.Timestamp))
     
-    // Write key and value
     binary.BigEndian.PutUint32(buffer[pos+14:pos+18], int32(len(msg.Key)))
     copy(buffer[pos+18:], msg.Key)
     binary.BigEndian.PutUint32(buffer[pos+18+len(msg.Key):], int32(len(msg.Value)))
@@ -1186,26 +1199,7 @@ func (l *LogFile) writeMessage(msg *Message) (int64, error) {
 }
 ```
 
-#### 2. Index Files (.index) - Offset to Position Mapping
-
-Index files provide fast lookup from logical offsets to physical byte positions in the log file. They use a compact binary format:
-
-```
-Index Entry Format (8 bytes each):
-┌──────────────┬─────────────────┐
-│ Relative     │ Physical        │
-│ Offset       │ Position        │
-│ 4 bytes      │ 4 bytes         │
-│ (int32)      │ (int32)         │
-└──────────────┴─────────────────┘
-```
-
-**Index File Details:**
-- **Sparse indexing**: Not every message has an index entry (default: every 4KB of log data)
-- **Relative offsets**: Stored relative to segment base offset to save space
-- **Sorted order**: Entries are always sorted by offset for binary search
-- **Fixed size**: Each entry is exactly 8 bytes
-
+**2. Index File Binary Search Implementation:**
 ```go
 type IndexEntry struct {
     RelativeOffset uint32  // Offset relative to segment base offset
@@ -1246,29 +1240,82 @@ func (idx *IndexFile) lookup(targetOffset int64) (uint32, error) {
     
     return 0, nil // Read from beginning
 }
+```
 
-func (idx *IndexFile) append(offset int64, position uint32) error {
-    relativeOffset := uint32(offset - idx.baseOffset)
+**3. Complete Reading Process:**
+```go
+// Consumer wants to read from offset 65,432
+func (p *Partition) ReadFromOffset(targetOffset int64) []Message {
+    // 1. Find correct segment: offset 65,432 is in segment 060000
+    segment := p.findSegment(65,432) // Returns segment starting at 60,000
     
-    entry := IndexEntry{
-        RelativeOffset: relativeOffset,
-        Position:       position,
-    }
+    // 2. Use index to find position in log file
+    position := segment.IndexFile.findPosition(65,432)
     
-    // Write directly to memory-mapped file
-    entryIndex := len(idx.entries)
-    if entryIndex >= idx.maxEntries {
-        return fmt.Errorf("index file full")
-    }
-    
-    entryPos := entryIndex * 8
-    binary.BigEndian.PutUint32(idx.mmap[entryPos:entryPos+4], relativeOffset)
-    binary.BigEndian.PutUint32(idx.mmap[entryPos+4:entryPos+8], position)
-    
-    idx.entries = append(idx.entries, entry)
-    return nil
+    // 3. Seek to that position and read
+    segment.LogFile.Seek(position, 0)
+    return segment.readMessages(100) // Read next 100 messages
 }
 ```
+
+**Benefits of This Log Structure:**
+
+1. **Sequential I/O**: All writes are appends, which are much faster than random writes
+2. **Immutability**: Once written, messages never change, simplifying concurrent access
+3. **Efficient Storage**: Index files allow fast random access without loading entire log
+4. **Scalability**: Each partition can be on different disks/servers
+5. **Fault Tolerance**: Segments can be replicated across multiple brokers
+
+
+### Internal File Structure Details
+
+Now let's dive deeper into how each file type stores data internally:
+
+#### 1. Log Files (.log) - Message Data Storage
+
+The .log files contain the actual message data in a binary format. Each message is stored with the following structure:
+
+```
+Message Record Format:
+┌─────────────┬──────────────┬─────────────┬──────────────┬─────────────┬─────────────┐
+│   Offset    │  Message     │   CRC32     │  Magic Byte  │  Attributes │  Timestamp  │
+│   8 bytes   │  Size        │   4 bytes   │   1 byte     │   1 byte    │   8 bytes   │
+│   (int64)   │  4 bytes     │             │              │             │             │
+└─────────────┼──────────────┼─────────────┼──────────────┼─────────────┼─────────────┤
+│  Key Length │  Key Data    │ Value Length│  Value Data  │   Headers   │             │
+│   4 bytes   │  N bytes     │   4 bytes   │   M bytes    │  Variable   │             │
+│   (int32)   │              │   (int32)   │              │             │             │
+└─────────────┴──────────────┴─────────────┴──────────────┴─────────────┴─────────────┘
+```
+
+**Log File Components:**
+- **Offset**: Unique monotonic identifier for the message within partition
+- **Message Size**: Total size of the message record in bytes
+- **CRC32**: Checksum for data integrity verification
+- **Magic Byte**: Protocol version identifier (v0, v1, v2)
+- **Attributes**: Compression type, timestamp type flags
+- **Timestamp**: Message timestamp (producer or broker time)
+- **Key/Value**: Actual message payload
+
+#### 2. Index Files (.index) - Offset to Position Mapping
+
+Index files provide fast lookup from logical offsets to physical byte positions in the log file. They use a compact binary format:
+
+```
+Index Entry Format (8 bytes each):
+┌──────────────┬─────────────────┐
+│ Relative     │ Physical        │
+│ Offset       │ Position        │
+│ 4 bytes      │ 4 bytes         │
+│ (int32)      │ (int32)         │
+└──────────────┴─────────────────┘
+```
+
+**Index File Details:**
+- **Sparse indexing**: Not every message has an index entry (default: every 4KB of log data)
+- **Relative offsets**: Stored relative to segment base offset to save space
+- **Sorted order**: Entries are always sorted by offset for binary search
+- **Fixed size**: Each entry is exactly 8 bytes
 
 #### 3. Time Index Files (.timeindex) - Timestamp to Offset Mapping
 
