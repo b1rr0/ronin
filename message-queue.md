@@ -225,7 +225,7 @@ Various message brokers exist, each with different trade-offs:
 
 Message brokers (Kafka, RabbitMQ, NATS, Pulsar, etc.) are distributed systems and must comply with the CAP theorem. Different brokers make different trade-offs between Consistency, Availability, and Partition tolerance.
 
-**Examples:**
+#### Examples
 
 **Apache Kafka**
 - Chooses AP (Availability + Partition tolerance)
@@ -605,7 +605,7 @@ The coordinator tracks broker load and helps producers make intelligent decision
 
 Producers use different algorithms to distribute messages across partitions. Each strategy serves specific use cases:
 
-###### 1. Round-Robin Partitioning
+##### 1. Round-Robin Partitioning
 
 **Algorithm:** Distributes messages evenly across all partitions using a rotating counter.
 
@@ -627,7 +627,7 @@ func (r *RoundRobinPartitioner) Partition(message *Message, metadata *TopicMetad
 }
 ```
 
-###### 2. Key-Based Partitioning (Consistent Hashing)
+##### 2. Key-Based Partitioning (Consistent Hashing)
 
 **Algorithm:** Uses message key hash to determine partition, ensuring same keys always go to same partition.
 
@@ -650,7 +650,7 @@ func (k *KeyPartitioner) Partition(message *Message, metadata *TopicMetadata) in
 }
 ```
 
-###### 3. Sticky Partitioning
+##### 3. Sticky Partitioning
 
 **Algorithm:** Batches keyless messages to same partition until batch is full, then switches.
 
@@ -685,7 +685,7 @@ func (s *StickyPartitioner) Partition(message *Message, metadata *TopicMetadata)
 }
 ```
 
-###### 4. Load-Aware Selection
+##### 4. Load-Aware Selection
 
 **Algorithm:** Chooses partition based on real-time broker load metrics.
 
@@ -1060,7 +1060,7 @@ func (s *LogSegment) Append(message []byte) (offset int64, err error) {
 }
 ```
 
-**Real-World Example: 10 Log Segments**
+#### Real-World Example: 10 Log Segments
 
 Here's how a busy topic with 10 segments would look on disk:
 
@@ -1091,7 +1091,7 @@ Here's how a busy topic with 10 segments would look on disk:
 └── 00000000000000090000.index    # Index for segment 9 (active)
 ```
 
-**Reading Process Example:**
+#### Reading Process Example
 
 **How Reading by Offset Works:**
 
@@ -1525,7 +1525,7 @@ This flow ensures durability, ordering, and efficient retrieval while maintainin
 
 **Further Reading**: For more detailed information about Kafka log performance and internals, see [Kafka Performance: Kafka Logs](https://www.redpanda.com/guides/kafka-performance-kafka-logs).
 
-## What is a Consumer
+## Consumer Service
 
 A **Consumer** is a client that reads messages from Kafka topics. Consumers retrieve data from one or more partitions and process them at their own pace.
 
@@ -1533,7 +1533,7 @@ A **Consumer** is a client that reads messages from Kafka topics. Consumers retr
 
 *Basic Kafka architecture showing producers sending messages to topics, which are then consumed by consumers. This illustrates the fundamental data flow where producers write to topics and consumers read from them.*
 
-### Core Consumer Principles
+### Consumer Principles
 
 - **Pull-based model**: Consumers actively request data from brokers (rather than receiving push notifications)
 - **Offset tracking**: Consumers track their reading position in each partition
@@ -1557,47 +1557,47 @@ type TopicPartition struct {
 }
 ```
 
-## What is a Consumer Group
+## Consumer Groups
 
-### **Consumer Group = Group of Consumers for Horizontal Scaling**
+### Consumer Group Concept
 
 A **Consumer Group** is a group of Consumers with the same `group.id` that **collectively** read from a topic, **distributing partitions among themselves**.
 
-### **Key Consumer Group Principles:**
+### Key Principles
 
 1. **One partition = one Consumer per group**
 2. **One Consumer can read multiple partitions**
 3. **Automatic partition distribution**
 4. **Shared offset tracking**
 
-### **Consumer Group Examples with Visual Diagrams:**
+### Visual Examples
 
-#### **Scenario 1: Single Consumer**
+#### Scenario 1: Single Consumer
 ![single_in_a_consumer_group.png](assets/message_queue/single_in_a_consumer_group.png)
 
 *A single consumer in a consumer group reads from all partitions of a topic. This provides simplicity but limits scalability as all processing is done by one consumer.*
 
 
-#### **Scenario 2: Multiple Consumers**
+#### Scenario 2: Multiple Consumers
 ![Multiple_consumers_in_one_consumer.png](assets/message_queue/Multiple_consumers_in_one_consumer.png)
 *Multiple consumers in the same group distribute partitions among themselves. Each partition is assigned to exactly one consumer in the group, enabling parallel processing while ensuring each message is processed only once within the group.*
 
-#### **Scenario 3: More Consumers than Partitions**
+#### Scenario 3: More Consumers than Partitions
 ![Additional_consumers_in_a_group_sit_idly.png](assets/message_queue/Additional_consumers_in_a_group_sit_idly.png)
 
 *When there are more consumers in a group than partitions in the topic, some consumers will remain idle. This demonstrates the partition limit - you cannot have more active consumers in a group than partitions.*
 
-#### **Scenario 4: Multiple Groups Reading Same Topic**
+#### Scenario 4: Multiple Groups Reading Same Topic
 ![Multiple_consumers_reading_the_same_records_from_the_topic.png](assets/message_queue/Multiple_consumers_reading_the_same_records_from_the_topic.png)
 *Different consumer groups can read the same messages from a topic independently. Each group maintains its own offset tracking, allowing different applications to process the same data stream for different purposes (e.g., one group for analytics, another for notifications).*
 
-#### **Competing Consumers Pattern (Load Balancing)**
+#### Competing Consumers Pattern (Load Balancing)
 When you want to **distribute workload** across multiple consumer instances, all consumers use the **same group ID**. Kafka ensures each message is delivered to only one consumer in the group. For example, if you have an order processing service with multiple instances, each order will be processed by exactly one instance, enabling horizontal scaling.
 
-#### **Publish-Subscribe Pattern (Broadcasting)**
+#### Publish-Subscribe Pattern (Broadcasting)
 When you want **multiple applications** to process the same data, each application uses a **different group ID**. This allows multiple services (analytics, notifications, audit) to all receive every message from the same topic, enabling multiple independent data processing pipelines.
 
-### **Group States and Lifecycle**
+### Group States and Lifecycle
 Consumer groups transition through these states:
 - **Empty**: No active members
 - **PreparingRebalance**: Rebalance initiated when members join/leave
@@ -1607,7 +1607,7 @@ Consumer groups transition through these states:
 
 Groups continuously cycle between Stable and rebalancing states as membership changes.
 
-### **Key Benefits of Consumer Groups**
+### Key Benefits of Consumer Groups
 
 1. **Horizontal Scalability**: Add more consumers to increase processing capacity
 2. **Fault Tolerance**: If one consumer fails, others continue processing
@@ -1648,7 +1648,7 @@ This process ensures **reliable message delivery**, **horizontal scaling** throu
 
 ## Protocols for Consumers and Producers
 
-### **Kafka Wire Protocol Foundation**
+### Kafka Wire Protocol Foundation
 
 Both **consumers** and **producers** communicate with Kafka brokers using the same **custom binary protocol over TCP**. This protocol is optimized for high throughput and low latency and is used by all Kafka clients regardless of whether they're reading (consuming) or writing (producing) messages.
 
@@ -1667,11 +1667,11 @@ Network Layer:        IP
 - **API Versioning**: Backward/forward compatibility through API versions
 - **Connection Pooling**: Persistent connections for reduced overhead
 
-### **Communication Protocol Options**
+### Communication Protocol Options
 
 Kafka supports multiple protocols that both **consumers** (readers) and **producers** (writers) can use to communicate with brokers. Each protocol is optimized for different use cases:
 
-#### **1. Kafka Native Protocol (Wire Protocol)**
+#### 1. Kafka Native Protocol (Wire Protocol)
 ```go
 // Native Kafka TCP protocol - most efficient for both consumers and producers
 type KafkaClient struct {
@@ -1687,7 +1687,7 @@ type KafkaClient struct {
 - **Compression**: Supports GZIP, Snappy, LZ4, ZSTD compression
 - **Security**: SSL/TLS encryption and SASL authentication support
 
-#### **2. HTTP REST API Protocol**
+#### 2. HTTP REST API Protocol
 ```go
 // REST API client for web applications (both consumers and producers)
 type RESTClient struct {
@@ -1751,7 +1751,7 @@ async function longPollConsume() {
 }
 ```
 
-#### **3. gRPC Protocol**
+#### 3. gRPC Protocol
 ```go
 // gRPC client for microservices (both consumers and producers)
 type GRPCClient struct {
@@ -1813,7 +1813,7 @@ func (c *GRPCClient) StartConsuming() error {
 - **Connection multiplexing** - multiple streams over single connection
 - **Efficient binary protocol** - lower bandwidth usage
 
-#### **4. WebSocket Protocol**
+#### 4. WebSocket Protocol
 ```go
 // WebSocket client for real-time web applications (both consumers and producers)
 type WebSocketClient struct {
@@ -1928,12 +1928,6 @@ consumer.connect();
 - **Browser native** - works directly in web browsers without extra libraries
 - **Bidirectional** - can send acknowledgments and control messages back
 
-### **Protocol Comparison**
-
-| Protocol | Throughput | Latency | Complexity | Use Case |
-|----------|------------|---------|------------|----------|
-| **Kafka Native** | Very High | Very Low | Medium | High-throughput applications |
-| **HTTP REST** | Medium | Medium | Low | Web applications, microservices |
-| **gRPC** | High | Low | Medium | Microservices, cross-language |
-| **WebSocket** | Medium | Very Low | Low | Real-time web applications |
+### Protocol Comparison
+![protocol_coparison.png](assets/message_queue/protocol_coparison.png)
 
